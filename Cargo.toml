@@ -7,3 +7,5 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.54"
+clap = {version = "3.1.2", features = ["derive"]}
+debug_print = "1.0.0"
