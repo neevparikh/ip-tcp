@@ -59,7 +59,7 @@ udp_recv ------- LinkLayer -- node
              /
 udp_send ----
 
-struct controller {
+struct LinkLayer { 
     interface_map {
         their_ip: interface {
             state,

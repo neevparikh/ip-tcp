@@ -1,5 +1,4 @@
 use clap::Parser;
-use debug_print::{debug_eprintln as edebug, debug_println as debug};
 
 use ip::lnx_config::LnxConfig;
 
