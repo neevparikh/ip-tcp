@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::interface::Interface;
 use super::ip_packet::IpPacket;
@@ -8,15 +8,19 @@ use super::lnx_config::LnxConfig;
 use super::protocol::Protocol;
 
 struct Node {
-  interfaces: Arc<HashMap<Ipv4Addr, Interface>>,
+  interfaces: Arc<RwLock<HashMap<Ipv4Addr, Interface>>>,
 }
 
 impl Node {
   fn new(config: LnxConfig) -> Node {
-    let interfaces = HashMap::new();
+    let mut interfaces = HashMap::new();
 
     for interface in config.interfaces {
-      interfaces.insert(interface.their_ip, interface);
+      interfaces.insert(interface.their_ip.clone(), interface);
+    }
+
+    Node {
+      interfaces: Arc::new(RwLock::new(interfaces)),
     }
   }
 

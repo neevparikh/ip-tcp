@@ -1,3 +1,2 @@
-pub struct IpPacket {
-  /// TODO
-}
+/// TODO
+pub struct IpPacket {}
