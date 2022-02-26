@@ -1,41 +1,48 @@
+use anyhow::{anyhow, Result};
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
-use std::sync::{Arc, RwLock};
 
-use super::interface::Interface;
 use super::ip_packet::IpPacket;
+use super::link_layer::LinkLayer;
 use super::lnx_config::LnxConfig;
 use super::protocol::Protocol;
 
-struct Node {
-  interfaces: Arc<RwLock<HashMap<Ipv4Addr, Interface>>>,
+// TODO: handlers should probably not take in an IpPacket but what should it take in
+type HandlerFunction = Box<dyn Fn(&IpPacket) -> IpPacket>;
+type HandlerMap = HashMap<Protocol, HandlerFunction>;
+
+pub struct Node {
+  handlers: HandlerMap,
+  link_layer: LinkLayer,
 }
 
 impl Node {
   fn new(config: LnxConfig) -> Node {
-    let mut interfaces = HashMap::new();
-
-    for interface in config.interfaces {
-      interfaces.insert(interface.their_ip.clone(), interface);
-    }
-
     Node {
-      interfaces: Arc::new(RwLock::new(interfaces)),
+      handlers: HashMap::new(),
+      link_layer: LinkLayer::new(config),
     }
   }
 
-  fn run() {
+  fn run(&mut self) -> Result<()> {
+    self.link_layer.run()?;
     todo!();
   }
 
-  fn register_handler<F, T>(protocol_num: Protocol, handler: F)
-  where
-    F: Fn(T) -> IpPacket,
-  {
-    todo!();
+  fn register_handler<F>(
+    &mut self,
+    protocol_num: Protocol,
+    handler: HandlerFunction,
+  ) {
+    self.handlers.insert(protocol_num, handler);
   }
 
-  fn handle_packet(packet: &IpPacket) {
-    todo!();
+  fn handle_packet(&self, packet: &IpPacket) -> Result<IpPacket> {
+    let protocol = packet.get_protocol()?;
+    let handler = self.handlers.get(&protocol);
+
+    match handler {
+      None => Err(anyhow!("No handler registered for protocol {protocol}")),
+      Some(handler) => Ok(handler(packet)),
+    }
   }
 }
