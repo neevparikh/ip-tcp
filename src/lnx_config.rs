@@ -33,7 +33,7 @@ impl LnxConfig {
 
     let mut interfaces = Vec::new();
     for (i, line) in reader.lines().enumerate() {
-      let mut line = line?;
+      let line = line?;
 
       let tokens: Vec<&str> = line.split(" ").collect();
       if tokens.len() != 4 {
