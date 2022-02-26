@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::net::{Ipv4Addr, UdpSocket};
-use std::sync::{Arc, Condvar, RwLock, RwLockReadGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 #[derive(Debug)]
 pub enum State {
