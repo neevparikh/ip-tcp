@@ -52,17 +52,25 @@ impl FragmentOffset {
   }
 
   /// Takes in the bytes from a ip packet and forms a fragment offset
-  pub fn unpack(high_order_byte: &u8, low_order_byte: &u8) -> FragmentOffset {
+  pub fn unpack(
+    high_order_byte: &u8,
+    low_order_byte: &u8,
+  ) -> Result<FragmentOffset> {
+    if *high_order_byte & 0b1000_0000u8 != 0 {
+      return Err(anyhow!(
+        "First bit of fragment flags is reserved and must be 0"
+      ));
+    }
     let dont_fragment = bool::from(*high_order_byte & 0b0100_0000u8 != 0);
     let more_fragments = bool::from(*high_order_byte & 0b0010_0000u8 != 0);
     let high_order_offset_byte = *high_order_byte & 0b0001_1111u8;
     let fragment_offset = convert_to_u16(&high_order_offset_byte, low_order_byte);
 
-    FragmentOffset {
+    Ok(FragmentOffset {
       dont_fragment,
       more_fragments,
       fragment_offset,
-    }
+    })
   }
 
   /// Returns (high_order_byte, low_order_byte)
@@ -115,7 +123,7 @@ impl IpPacket {
     todo!();
   }
 
-  pub fn unpack(bytes: &[u8]) -> IpPacket {
+  pub fn unpack(bytes: &[u8]) -> Result<IpPacket> {
     todo!();
   }
 
@@ -143,8 +151,8 @@ impl IpPacket {
     convert_to_u16(&self.header[4], &self.header[5])
   }
 
-  pub fn flags(&self) -> u16 {
-    convert_to_u16(&self.header[4], &self.header[5])
+  pub fn fragment_offset(&self) -> FragmentOffset {
+    FragmentOffset::unpack(&self.header[6], &self.header[7]).unwrap()
   }
 
   pub fn protocol(&self) -> Result<Protocol> {
