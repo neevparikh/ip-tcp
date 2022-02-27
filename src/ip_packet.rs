@@ -1,5 +1,7 @@
 use super::protocol::Protocol;
 
+use std::net::Ipv4Addr;
+
 use anyhow::{anyhow, Result};
 
 fn get_high_order_four_bits(byte: &u8) -> u8 {
@@ -143,6 +145,10 @@ impl IpPacket {
   }
 
   pub fn protocol(&self) -> Result<Protocol> {
+    todo!();
+  }
+
+  pub fn destination_addr(&self) -> Ipv4Addr {
     todo!();
   }
 }
