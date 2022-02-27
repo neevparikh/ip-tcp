@@ -6,7 +6,7 @@ use super::link_layer::LinkLayer;
 use super::lnx_config::LnxConfig;
 use super::protocol::Protocol;
 
-// TODO: handlers should probably not take in an IpPacket but what should it take in
+// TODO: Passing the whole packet might leak too much information
 type HandlerFunction = Box<dyn Fn(&IpPacket) -> IpPacket>;
 type HandlerMap = HashMap<Protocol, HandlerFunction>;
 
