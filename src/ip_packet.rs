@@ -30,6 +30,7 @@ pub struct FragmentOffset {
 impl FragmentOffset {
   const MAX_FRAGMENT_OFFSET: u16 = (1 << 13) - 1;
 
+  /// Creates a new FragmentOffset object and bound checks fragment_offset
   pub fn new(
     dont_fragment: bool,
     more_fragments: bool,
@@ -50,6 +51,7 @@ impl FragmentOffset {
     })
   }
 
+  /// Takes in the bytes from a ip packet and forms a fragment offset
   pub fn unpack(high_order_byte: &u8, low_order_byte: &u8) -> FragmentOffset {
     let dont_fragment = bool::from(*high_order_byte & 0b0100_0000u8 != 0);
     let more_fragments = bool::from(*high_order_byte & 0b0010_0000u8 != 0);
@@ -82,6 +84,7 @@ impl FragmentOffset {
     (high_order_byte, low_order_byte)
   }
 
+  /// Sets fragment offset value with bounds checking
   fn set_fragment_offset(&mut self, fragment_offset: u16) -> Result<()> {
     if fragment_offset > FragmentOffset::MAX_FRAGMENT_OFFSET {
       return Err(anyhow!(
