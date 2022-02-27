@@ -37,7 +37,7 @@ impl Node {
   }
 
   fn handle_packet(&self, packet: &IpPacket) -> Result<IpPacket> {
-    let protocol = packet.get_protocol()?;
+    let protocol = packet.protocol()?;
     let handler = self.handlers.get(&protocol);
 
     match handler {
