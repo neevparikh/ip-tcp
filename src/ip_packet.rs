@@ -152,15 +152,39 @@ impl IpPacket {
   }
 
   pub fn fragment_offset(&self) -> FragmentOffset {
+    // unwrap because we assume that once a IpPacket is formed it is valid
     FragmentOffset::unpack(&self.header[6], &self.header[7]).unwrap()
   }
 
-  pub fn protocol(&self) -> Result<Protocol> {
-    todo!();
+  pub fn time_to_live(&self) -> u8 {
+    self.header[8]
+  }
+
+  pub fn protocol(&self) -> Protocol {
+    // unwrap because we assume that once a IpPacket is formed it is valid
+    Protocol::try_from(self.header[9]).unwrap()
+  }
+
+  pub fn header_checksum(&self) -> u16 {
+    convert_to_u16(self.header[10], self.header[11])
+  }
+
+  pub fn source_address(&self) -> Ipv4Addr {
+    Ipv4Addr::new(
+      self.header[12],
+      self.header[13],
+      self.header[14],
+      self.header[15],
+    )
   }
 
   pub fn destination_addr(&self) -> Ipv4Addr {
-    todo!();
+    Ipv4Addr::new(
+      self.header[16],
+      self.header[17],
+      self.header[18],
+      self.header[19],
+    )
   }
 }
 
