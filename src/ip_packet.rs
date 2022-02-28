@@ -12,6 +12,26 @@ fn get_low_order_four_bits(byte: &u8) -> u8 {
   byte & 0b0000_1111
 }
 
+fn set_high_order_four_bits(byte: &mut u8, high_bits: &u8) {
+  debug_assert!(*high_bits < (1 << 4));
+  *byte &= 0b0000_1111;
+  *byte |= high_bits << 4;
+}
+
+fn set_low_order_four_bits(byte: &mut u8, low_bits: &u8) {
+  debug_assert!(*low_bits < (1 << 4));
+  *byte &= 0b1111_0000;
+  *byte |= low_bits;
+}
+
+fn get_high_order_byte(num: &u16) -> u8 {
+  (num >> 8) as u8
+}
+
+fn get_low_order_byte(num: &u16) -> u8 {
+  (num & 0xffu16) as u8
+}
+
 fn convert_to_u16(higher_order: &u8, lower_order: &u8) -> u16 {
   (u16::from(*higher_order) << 8) + u16::from(*lower_order)
 }
@@ -86,8 +106,8 @@ impl FragmentOffset {
 
     debug_assert!(self.fragment_offset <= FragmentOffset::MAX_FRAGMENT_OFFSET);
     // use += instead of |= to avoid explicit conversion
-    high_order_byte += u8::try_from(self.fragment_offset >> 8).unwrap();
-    let low_order_byte = u8::try_from(dbg!(self.fragment_offset & 0xffu16)).unwrap();
+    high_order_byte += get_high_order_byte(&self.fragment_offset);
+    let low_order_byte = get_low_order_byte(&self.fragment_offset);
 
     (high_order_byte, low_order_byte)
   }
@@ -112,15 +132,50 @@ impl FragmentOffset {
 }
 
 pub struct IpPacket {
-  header: Vec<u8>,
+  /// Contains all of the mandatory header information
+  header: [u8; 20],
+  option_data: Vec<u8>,
+  /// Actual data associated with packet
   data: Vec<u8>,
 }
 
 impl IpPacket {
   /// Note that most getters and setters do not bounds check, so at a minimum
   /// new must make header the correct length
-  pub fn new() -> IpPacket {
-    todo!();
+  pub fn new(
+    source: Ipv4Addr,
+    destination: Ipv4Addr,
+    protocol: Protocol,
+    type_of_service: u8,
+    time_to_live: u8,
+    data: &[u8],
+    identifier: u16,
+    dont_fragment: bool,
+    option_data: &[u8],
+  ) -> Result<IpPacket> {
+    let mut packet = IpPacket {
+      header: [0u8; 20],
+      option_data: option_data.to_vec(),
+      data: data.to_vec(),
+    };
+    packet.initialize_checksum();
+
+    packet.set_version(4)?;
+    let option_len = u8::try_from(option_data.len())?;
+    let optional_length_in_words = 1u8 + ((option_len - 1u8) / 4u8);
+    packet.set_internet_header_length(5u8 + optional_length_in_words)?;
+
+    let data_len: u16 = u16::try_from(data.len())?;
+    packet.set_total_length(20u16 + u16::from(option_len) + data_len);
+    packet.set_identification(identifier);
+    // Set flags so that our packets don't fragment
+    packet.set_fragment_offset(FragmentOffset::new(true, false, 0)?);
+    packet.set_time_to_live(time_to_live);
+    packet.set_protocol(protocol);
+    packet.set_source_address(source);
+    packet.set_destination_address(destination);
+
+    Ok(packet)
   }
 
   pub fn unpack(bytes: &[u8]) -> Result<IpPacket> {
@@ -166,7 +221,7 @@ impl IpPacket {
   }
 
   pub fn header_checksum(&self) -> u16 {
-    convert_to_u16(self.header[10], self.header[11])
+    convert_to_u16(&self.header[10], &self.header[11])
   }
 
   pub fn source_address(&self) -> Ipv4Addr {
@@ -185,6 +240,86 @@ impl IpPacket {
       self.header[18],
       self.header[19],
     )
+  }
+
+  /// Performs full checksum calculation
+  fn initialize_checksum(&mut self) {
+    self.set_header_checksum(0u16);
+    let checksum: u16 = self
+      .option_data
+      .iter()
+      .fold(0u16, |a, b| a.wrapping_add((*b) as u16));
+    let checksum: u16 = self
+      .header
+      .iter()
+      .fold(0u16, |a, b| a.wrapping_add((*b) as u16));
+
+    self.set_header_checksum(checksum);
+  }
+
+  /// Warning, checksum should always be set by other setters or in the
+  /// initialize_checksum function
+  fn set_header_checksum(&mut self, checksum: u16) {
+    self.header[10] = get_high_order_byte(&checksum);
+    self.header[11] = get_low_order_byte(&checksum);
+  }
+
+  /// Sets ip version number
+  /// TODO: should this check that the version is a supported ip version number
+  /// i.e. 4
+  fn set_version(&mut self, version: u8) -> Result<()> {
+    if version >= 1 << 4 {
+      return Err(anyhow!("Version only gets 4 bits but was set to {version}"));
+    }
+    set_high_order_four_bits(&mut self.header[0], &version);
+    Ok(())
+  }
+
+  /// TODO: should this validate that this is the true header length
+  fn set_internet_header_length(&mut self, ihl: u8) -> Result<()> {
+    if ihl >= 1 << 4 {
+      return Err(anyhow!("IHL only gets 4 bits but was set to {ihl}"));
+    }
+    set_low_order_four_bits(&mut self.header[0], &ihl);
+    Ok(())
+  }
+
+  fn set_total_length(&mut self, total_length: u16) {
+    self.header[2] = get_high_order_byte(&total_length);
+    self.header[3] = get_low_order_byte(&total_length);
+  }
+
+  fn set_identification(&mut self, identification: u16) {
+    self.header[4] = get_high_order_byte(&identification);
+    self.header[5] = get_low_order_byte(&identification);
+  }
+
+  fn set_fragment_offset(&mut self, fragment_offset: FragmentOffset) {
+    (self.header[6], self.header[7]) = fragment_offset.to_bytes();
+  }
+
+  fn set_time_to_live(&mut self, time_to_live: u8) {
+    self.header[8] = time_to_live;
+  }
+
+  fn set_protocol(&mut self, protocol: Protocol) {
+    self.header[9] = protocol.into();
+  }
+
+  fn set_source_address(&mut self, source_address: Ipv4Addr) {
+    let addr_bytes = source_address.octets();
+    self.header[12] = addr_bytes[0];
+    self.header[13] = addr_bytes[1];
+    self.header[14] = addr_bytes[2];
+    self.header[15] = addr_bytes[3];
+  }
+
+  fn set_destination_address(&mut self, destination_address: Ipv4Addr) {
+    let addr_bytes = destination_address.octets();
+    self.header[16] = addr_bytes[0];
+    self.header[17] = addr_bytes[1];
+    self.header[18] = addr_bytes[2];
+    self.header[19] = addr_bytes[3];
   }
 }
 
@@ -215,6 +350,62 @@ mod tests {
   }
 
   #[test]
+  fn test_set_high_order_four_bits() {
+    let mut byte = 0b0000_0000u8;
+    let high_bits = 0b0000_1111u8;
+    set_high_order_four_bits(&mut byte, &high_bits);
+    assert_eq!(byte, 0b1111_0000);
+
+    let mut byte = 0b1111_1111u8;
+    let high_bits = 0b0000_0000u8;
+    set_high_order_four_bits(&mut byte, &high_bits);
+    assert_eq!(byte, 0b0000_1111);
+
+    let mut byte = 0b0110_1001u8;
+    let high_bits = 0b0000_1010u8;
+    set_high_order_four_bits(&mut byte, &high_bits);
+    assert_eq!(byte, 0b1010_1001);
+  }
+
+  #[test]
+  fn test_set_low_order_four_bits() {
+    let mut byte = 0b0000_0000u8;
+    let low_bits = 0b0000_1111u8;
+    set_low_order_four_bits(&mut byte, &low_bits);
+    assert_eq!(byte, 0b0000_1111);
+
+    let mut byte = 0b1111_1111u8;
+    let low_bits = 0b0000_0000u8;
+    set_low_order_four_bits(&mut byte, &low_bits);
+    assert_eq!(byte, 0b1111_0000);
+
+    let mut byte = 0b0110_1001u8;
+    let low_bits = 0b0000_1010u8;
+    set_low_order_four_bits(&mut byte, &low_bits);
+    assert_eq!(byte, 0b0110_1010);
+  }
+
+  #[test]
+  fn test_get_high_order_byte() {
+    let byte = 0x00ffu16;
+    assert_eq!(get_high_order_byte(&byte), 0u8);
+    let byte = 0xff00u16;
+    assert_eq!(get_high_order_byte(&byte), 0xffu8);
+    let byte = 0b0110_0000_1001_1010u16;
+    assert_eq!(get_high_order_byte(&byte), 0b0110_0000u8);
+  }
+
+  #[test]
+  fn test_get_low_order_byte() {
+    let byte = 0x00ffu16;
+    assert_eq!(get_low_order_byte(&byte), 0xffu8);
+    let byte = 0xff00u16;
+    assert_eq!(get_low_order_byte(&byte), 0u8);
+    let byte = 0b0110_0000_1001_1010u16;
+    assert_eq!(get_low_order_byte(&byte), 0b1001_1010u8);
+  }
+
+  #[test]
   fn test_convert_to_u16() {
     let low_order_byte = 0b0000_0000u8;
     let high_order_byte = 0b1111_1111u8;
@@ -239,7 +430,8 @@ mod tests {
   fn test_fragment_offset() {
     let high_order_byte = 0b0110_0000;
     let low_order_byte = 0b0000_0000;
-    let fragment_offset = FragmentOffset::unpack(&high_order_byte, &low_order_byte);
+    let fragment_offset =
+      FragmentOffset::unpack(&high_order_byte, &low_order_byte).unwrap();
     let expected_fragment_offset = FragmentOffset::new(true, true, 0).unwrap();
     assert_eq!(fragment_offset, expected_fragment_offset);
     assert_eq!(
@@ -249,7 +441,8 @@ mod tests {
 
     let high_order_byte = 0b0111_0010;
     let low_order_byte = 0b0010_0100;
-    let fragment_offset = FragmentOffset::unpack(&high_order_byte, &low_order_byte);
+    let fragment_offset =
+      FragmentOffset::unpack(&high_order_byte, &low_order_byte).unwrap();
     let expected_fragment_offset_value = 0b0001_0010_0010_0100;
     let expected_fragment_offset =
       FragmentOffset::new(true, true, expected_fragment_offset_value).unwrap();
