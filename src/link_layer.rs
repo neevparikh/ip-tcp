@@ -18,7 +18,7 @@ pub struct LinkLayer {
   addr_to_id: Arc<HashMap<Ipv4Addr, usize>>,
   local_link: UdpSocket,
   send_tx: Option<Sender<IpPacket>>,
-  read_rx: Option<Receiver<IpPacket>>,
+  recv_rx: Option<Receiver<IpPacket>>,
 }
 
 impl LinkLayer {
@@ -29,8 +29,9 @@ impl LinkLayer {
     let mut interface_id_by_their_addr = HashMap::new();
 
     for (id, interface) in config.interfaces.into_iter().enumerate() {
+      let their_ip = interface.their_ip.clone();
       interfaces.insert(id, interface);
-      interface_id_by_their_addr.insert(interface.their_ip.clone(), id);
+      interface_id_by_their_addr.insert(their_ip, id);
     }
 
     LinkLayer {
@@ -38,18 +39,27 @@ impl LinkLayer {
       addr_to_id: Arc::new(interface_id_by_their_addr),
       local_link: config.local_link,
       send_tx: None,
-      read_rx: None,
+      recv_rx: None,
     }
   }
 
-  pub fn run(&self) {
+  pub fn run(&mut self) {
     let (send_tx, send_rx) = channel();
     let (recv_tx, recv_rx) = channel();
+
+    let local_for_send = self.local_link.try_clone().unwrap();
+    let addr_map_send = self.addr_to_id.clone();
+    let interface_map_send = self.interfaces.clone();
+
+    let local_for_recv = self.local_link.try_clone().unwrap();
+    let addr_map_recv = self.addr_to_id.clone();
+    let interface_map_recv = self.interfaces.clone();
+
     thread::spawn(move || {
-      LinkLayer::send_thread(send_rx);
+      LinkLayer::send_thread(send_rx, local_for_send, addr_map_send, interface_map_send)
     });
     thread::spawn(move || {
-      LinkLayer::recv_thread(recv_tx);
+      LinkLayer::recv_thread(recv_tx, local_for_recv, addr_map_recv, interface_map_recv)
     });
     self.send_tx = Some(send_tx);
     self.recv_rx = Some(recv_rx);
@@ -93,13 +103,16 @@ impl LinkLayer {
     loop {
       match send_rx.recv() {
         Ok(packet) => {
-          let dst_ip_addr = packet.destination_addr();
+          let dst_ip_addr = packet.destination_address();
           let id = addr_to_id[&dst_ip_addr];
           let map = id_to_interface.read().unwrap();
-          let interface = map[&id];
+          let interface = &map[&id];
           let dst_socket_addr = interface.outgoing_link;
+          let state = interface.state().clone();
           drop(map);
-          local_link.send_to(&packet.pack(), dst_socket_addr)?;
+          if state == State::UP {
+            local_link.send_to(&packet.pack(), dst_socket_addr)?;
+          }
         }
         Err(e) => {
           debug!("Connection dropped, exiting...");
@@ -121,19 +134,27 @@ impl LinkLayer {
     loop {
       match local_link.recv_from(&mut buf) {
         Ok((bytes_read, src)) => {
-          let packet = IpPacket::unpack(&buf[..bytes_read]);
-          match addr_to_id.get(packet.source_addr()) {
-            None => debug!(
-              "Warning: Unknown source addr {}, local: {}, dropping...",
-              packet.source_addr(),
-              src
-            ),
+          let packet = match IpPacket::unpack(&buf[..bytes_read]) {
+            Err(e) => {
+              debug!("Warning: Malformed packet from {}, dropping...", src);
+              continue;
+            }
+            Ok(p) => p,
+          };
+          match addr_to_id.get(&packet.source_address()) {
+            None => {
+              debug!(
+                "Warning: Unknown source addr {}, local: {}, dropping...",
+                packet.source_address(),
+                src
+              );
+            }
             Some(id) => {
               let map = id_to_interface.read().unwrap();
-              let interface = map[&id];
-              let state = interface.state();
+              let interface = &map[&id];
+              let state = interface.state().clone();
               drop(map);
-              if *state == State::UP {
+              if state == State::UP {
                 match read_tx.send(packet) {
                   Ok(_) => (),
                   Err(e) => {

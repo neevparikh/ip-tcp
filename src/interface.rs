@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::net::{Ipv4Addr, SocketAddr};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum State {
   UP,
   DOWN,
@@ -35,15 +35,13 @@ impl Interface {
   }
 
   /// Sets interface to UP state
-  pub fn up(&self) {
-    let mut state = self.state;
-    state = State::UP;
+  pub fn up(&mut self) {
+    self.state = State::UP;
   }
 
   /// Sets interface to DOWN state
-  pub fn down(&self) {
-    let mut state = self.state;
-    state = State::DOWN;
+  pub fn down(&mut self) {
+    self.state = State::DOWN;
   }
 
   pub fn send(&self) -> Result<()> {

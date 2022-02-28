@@ -2,7 +2,7 @@ use crate::interface::Interface;
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::net::SocketAddr;
+use std::net::{SocketAddr, UdpSocket};
 use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
@@ -46,7 +46,7 @@ impl LnxConfig {
       } else {
         interfaces.push(Interface::new(
           i,
-          SocketAddr::from_str(format!("{}:{}", tokens[0], tokens[1]))?,
+          SocketAddr::from_str(&format!("{}:{}", tokens[0], tokens[1]))?,
           tokens[2].parse()?,
           tokens[3].parse()?,
         )?);
