@@ -297,7 +297,9 @@ impl IpPacket {
 
   /// TODO: update checksum
   fn set_fragment_offset(&mut self, fragment_offset: FragmentOffset) {
-    (self.header[6], self.header[7]) = fragment_offset.to_bytes();
+    let (f1, f2) = fragment_offset.to_bytes();
+    self.header[6] = f1;
+    self.header[7] = f2;
   }
 
   /// TODO: update checksum
