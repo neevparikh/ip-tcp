@@ -128,9 +128,112 @@ impl FragmentOffset {
     }
 }
 
+/// Defined in RFC 791 page 16
+pub enum IpOption {
+    EndOfOptionList,
+    NoOperation,
+    Security([u8; 9]),
+    LooseSourceRouting(Vec<u8>),
+    StrictSourceRouting(Vec<u8>),
+    RecordRoute(Vec<u8>),
+    StreamID([u8; 2]),
+    InternetTimestamp(Vec<u8>),
+}
+
+impl IpOption {
+    fn unpack(bytes: &[u8]) -> Result<IpOption> {
+        if bytes.len() == 0 {
+            return Err(anyhow!("IpOption bytes empty"));
+        }
+
+        let option_type = bytes[0];
+        let check_len_option = |field_name| {
+            if bytes.len() < 2 || bytes.len() != bytes[1].into() {
+                Err(anyhow!("{field_name} option wrong length"))
+            } else {
+                Ok(())
+            }
+        };
+
+        match option_type {
+            0 => Ok(IpOption::EndOfOptionList),
+            1 => Ok(IpOption::NoOperation),
+            7 => {
+                check_len_option("RecordRoute");
+                Ok(IpOption::RecordRoute(bytes[2..].to_vec()))
+            }
+
+            68 => {
+                check_len_option("InternetTimestamp")?;
+                Ok(IpOption::InternetTimestamp(bytes[2..].to_vec()))
+            }
+
+            130 => {
+                // TODO: is it worth parsing out the actual security information/validating
+                // that is formatted correctly
+                check_len_option("Security")?;
+                if bytes[1] != 11 {
+                    return Err(anyhow!("Security option wrong length"));
+                }
+
+                let mut info = [0u8; 9];
+                info.copy_from_slice(&bytes[2..11]);
+                Ok(IpOption::Security(info))
+            }
+
+            131 => {
+                check_len_option("LooseSourceRouting")?;
+                Ok(IpOption::LooseSourceRouting(bytes[2..].to_vec()))
+            }
+
+            136 => {
+                if bytes[1] != 4 {
+                    return Err(anyhow!("StreamID option wrong length"));
+                }
+                check_len_option("StreamID")?;
+
+                let mut info = [0u8; 2];
+                info.copy_from_slice(&bytes[2..4]);
+                Ok(IpOption::StreamID(info))
+            }
+
+            137 => {
+                check_len_option("StrictSourceRouting")?;
+                Ok(IpOption::StrictSourceRouting(bytes[2..].to_vec()))
+            }
+            _ => Err(anyhow!("Unknown option_type {option_type}")),
+        }
+    }
+
+    fn pack(&self) -> Vec<u8> {
+        let construct_res = |type_num: u8, data: &[u8]| {
+            let len = u8::try_from(data.len()).unwrap() + 2;
+            let mut res = vec![type_num, len];
+            res.extend(data);
+            res
+        };
+
+        match self {
+            IpOption::EndOfOptionList => vec![0u8],
+            IpOption::NoOperation => vec![1u8],
+            IpOption::Security(data) => construct_res(130u8, &data[..]),
+            IpOption::LooseSourceRouting(data) => construct_res(131u8, &data[..]),
+            IpOption::StrictSourceRouting(data) => construct_res(137u8, &data[..]),
+            IpOption::RecordRoute(data) => construct_res(7u8, &data[..]),
+            IpOption::StreamID(data) => construct_res(136u8, &data[..]),
+            IpOption::InternetTimestamp(data) => construct_res(68, &data[..]),
+        }
+    }
+}
+
+pub struct IpOptionData {
+    data: Vec<IpOption>,
+}
+
 pub struct IpPacket {
     /// Contains all of the mandatory header information
     header: [u8; 20],
+    /// Option data must have len of a multiple of 4
     option_data: Vec<u8>,
     /// Actual data associated with packet
     data: Vec<u8>,
