@@ -72,10 +72,7 @@ impl FragmentOffset {
   }
 
   /// Takes in the bytes from a ip packet and forms a fragment offset
-  pub fn unpack(
-    high_order_byte: &u8,
-    low_order_byte: &u8,
-  ) -> Result<FragmentOffset> {
+  pub fn unpack(high_order_byte: &u8, low_order_byte: &u8) -> Result<FragmentOffset> {
     if *high_order_byte & 0b1000_0000u8 != 0 {
       return Err(anyhow!(
         "First bit of fragment flags is reserved and must be 0"
@@ -233,7 +230,7 @@ impl IpPacket {
     )
   }
 
-  pub fn destination_addr(&self) -> Ipv4Addr {
+  pub fn destination_address(&self) -> Ipv4Addr {
     Ipv4Addr::new(
       self.header[16],
       self.header[17],
@@ -439,8 +436,7 @@ mod tests {
   fn test_fragment_offset() {
     let high_order_byte = 0b0110_0000;
     let low_order_byte = 0b0000_0000;
-    let fragment_offset =
-      FragmentOffset::unpack(&high_order_byte, &low_order_byte).unwrap();
+    let fragment_offset = FragmentOffset::unpack(&high_order_byte, &low_order_byte).unwrap();
     let expected_fragment_offset = FragmentOffset::new(true, true, 0).unwrap();
     assert_eq!(fragment_offset, expected_fragment_offset);
     assert_eq!(
@@ -450,8 +446,7 @@ mod tests {
 
     let high_order_byte = 0b0111_0010;
     let low_order_byte = 0b0010_0100;
-    let fragment_offset =
-      FragmentOffset::unpack(&high_order_byte, &low_order_byte).unwrap();
+    let fragment_offset = FragmentOffset::unpack(&high_order_byte, &low_order_byte).unwrap();
     let expected_fragment_offset_value = 0b0001_0010_0010_0100;
     let expected_fragment_offset =
       FragmentOffset::new(true, true, expected_fragment_offset_value).unwrap();
