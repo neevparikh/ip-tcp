@@ -267,6 +267,7 @@ impl IpPacket {
   /// Sets ip version number
   /// TODO: should this check that the version is a supported ip version number
   /// i.e. 4
+  /// TODO: update checksum
   fn set_version(&mut self, version: u8) -> Result<()> {
     if version >= 1 << 4 {
       return Err(anyhow!("Version only gets 4 bits but was set to {version}"));
@@ -276,6 +277,7 @@ impl IpPacket {
   }
 
   /// TODO: should this validate that this is the true header length
+  /// TODO: update checksum
   fn set_internet_header_length(&mut self, ihl: u8) -> Result<()> {
     if ihl >= 1 << 4 {
       return Err(anyhow!("IHL only gets 4 bits but was set to {ihl}"));
@@ -284,28 +286,34 @@ impl IpPacket {
     Ok(())
   }
 
+  /// TODO: update checksum
   fn set_total_length(&mut self, total_length: u16) {
     self.header[2] = get_high_order_byte(&total_length);
     self.header[3] = get_low_order_byte(&total_length);
   }
 
+  /// TODO: update checksum
   fn set_identification(&mut self, identification: u16) {
     self.header[4] = get_high_order_byte(&identification);
     self.header[5] = get_low_order_byte(&identification);
   }
 
+  /// TODO: update checksum
   fn set_fragment_offset(&mut self, fragment_offset: FragmentOffset) {
     (self.header[6], self.header[7]) = fragment_offset.to_bytes();
   }
 
+  /// TODO: update checksum
   fn set_time_to_live(&mut self, time_to_live: u8) {
     self.header[8] = time_to_live;
   }
 
+  /// TODO: update checksum
   fn set_protocol(&mut self, protocol: Protocol) {
     self.header[9] = protocol.into();
   }
 
+  /// TODO: update checksum
   fn set_source_address(&mut self, source_address: Ipv4Addr) {
     let addr_bytes = source_address.octets();
     self.header[12] = addr_bytes[0];
@@ -314,6 +322,7 @@ impl IpPacket {
     self.header[15] = addr_bytes[3];
   }
 
+  /// TODO: update checksum
   fn set_destination_address(&mut self, destination_address: Ipv4Addr) {
     let addr_bytes = destination_address.octets();
     self.header[16] = addr_bytes[0];
