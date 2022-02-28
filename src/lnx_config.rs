@@ -1,13 +1,16 @@
 use crate::interface::Interface;
-use anyhow::{anyhow, Result};
+
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::net::UdpSocket;
+use std::net::SocketAddr;
+use std::str::FromStr;
+
+use anyhow::{anyhow, Result};
 
 #[derive(Debug)]
 pub struct LnxConfig {
   /// UdpSocket to recv incoming messages on
-  local_link: UdpSocket,
+  pub local_link: UdpSocket,
 
   pub interfaces: Vec<Interface>,
 }
@@ -41,10 +44,9 @@ impl LnxConfig {
           "File {lnx_filename} improperly formatted at line {i}"
         ));
       } else {
-        let socket = UdpSocket::bind(format!("{}:{}", tokens[0], tokens[1]))?;
         interfaces.push(Interface::new(
           i,
-          socket,
+          SocketAddr::from_str(format!("{}:{}", tokens[0], tokens[1]))?,
           tokens[2].parse()?,
           tokens[3].parse()?,
         )?);

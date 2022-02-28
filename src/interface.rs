@@ -1,8 +1,7 @@
 use anyhow::Result;
-use std::net::{Ipv4Addr, UdpSocket};
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::net::{Ipv4Addr, SocketAddr};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum State {
   UP,
   DOWN,
@@ -13,16 +12,16 @@ pub enum State {
 #[derive(Debug)]
 pub struct Interface {
   pub id: usize,
-  pub outgoing_link: UdpSocket,
+  pub outgoing_link: SocketAddr,
   pub our_ip: Ipv4Addr,
   pub their_ip: Ipv4Addr,
-  state: Arc<RwLock<State>>,
+  state: State,
 }
 
 impl Interface {
   pub fn new(
     id: usize,
-    outgoing_link: UdpSocket,
+    outgoing_link: SocketAddr,
     our_ip: Ipv4Addr,
     their_ip: Ipv4Addr,
   ) -> Result<Interface> {
@@ -31,32 +30,27 @@ impl Interface {
       outgoing_link,
       our_ip,
       their_ip,
-      state: Arc::new(RwLock::new(State::DOWN)),
+      state: State::DOWN,
     })
   }
 
   /// Sets interface to UP state
-  /// TODO: should these getters and setter panic on a poisoned mutex of return err
   pub fn up(&self) {
-    // Only panics if rwlock is poisoned
-    let mut state = self.state.write().unwrap();
-    *state = State::UP;
+    let mut state = self.state;
+    state = State::UP;
   }
 
   /// Sets interface to DOWN state
   pub fn down(&self) {
-    // Only panics if rwlock is poisoned
-    let mut state = self.state.write().unwrap();
-    *state = State::DOWN;
+    let mut state = self.state;
+    state = State::DOWN;
   }
 
   pub fn send(&self) -> Result<()> {
     todo!()
   }
 
-  /// Returns a ReadGuard of the state
-  pub fn state(&self) -> RwLockReadGuard<State> {
-    // Only panics if rwlock is poisoned
-    return self.state.read().unwrap();
+  pub fn state(&self) -> &State {
+    return &self.state;
   }
 }

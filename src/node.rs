@@ -24,15 +24,11 @@ impl Node {
   }
 
   fn run(&mut self) -> Result<()> {
-    self.link_layer.run()?;
+    self.link_layer.run();
     todo!();
   }
 
-  fn register_handler<F>(
-    &mut self,
-    protocol_num: Protocol,
-    handler: HandlerFunction,
-  ) {
+  fn register_handler<F>(&mut self, protocol_num: Protocol, handler: HandlerFunction) {
     self.handlers.insert(protocol_num, handler);
   }
 
