@@ -246,6 +246,10 @@ impl IpPacket {
     return res;
   }
 
+  pub fn get_data(&self) -> &[u8] {
+    &self.data
+  }
+
   pub fn version(&self) -> u8 {
     get_high_order_four_bits(&self.header[0])
   }

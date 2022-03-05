@@ -1,19 +1,19 @@
 use std::collections::HashMap;
 use std::io::stdin;
-use std::sync::mpsc::{Sender, Receiver};
-use std::sync::{Arc, Mutex};
-use std::{thread, option};
 use std::net::Ipv4Addr;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::{option, thread};
 
 use anyhow::{anyhow, Result};
 use shellwords;
 
 // use super::debug;
-use crate::{edebug, debug};
 use super::ip_packet::IpPacket;
 use super::link_layer::LinkLayer;
 use super::lnx_config::LnxConfig;
 use super::protocol::Protocol;
+use crate::{debug, edebug};
 
 // TODO: Passing the whole packet might leak too much information
 type HandlerFunction = Box<dyn (Fn(&IpPacket) -> Option<IpPacket>) + Send>;
@@ -32,13 +32,19 @@ impl Node {
     }
   }
 
-  fn listen(recv_rx: Receiver<IpPacket>, send_tx: Sender<IpPacket>, handlers: Arc<Mutex<HandlerMap>>) {
+  fn listen(
+    recv_rx: Receiver<IpPacket>,
+    send_tx: Sender<IpPacket>,
+    handlers: Arc<Mutex<HandlerMap>>,
+  ) {
     loop {
       match recv_rx.recv() {
         Ok(packet) => match Node::handle_packet(&handlers, &packet) {
-          Ok(Some(response)) => if let Err(e) = send_tx.send(response) {
-            edebug!("Closing Node listen thread");
-            return;
+          Ok(Some(response)) => {
+            if let Err(_e) = send_tx.send(response) {
+              edebug!("Closing Node listen thread");
+              return;
+            }
           }
           Ok(None) => (),
           Err(e) => eprintln!("Packet handler errored: {e}"),
@@ -91,7 +97,11 @@ impl Node {
 
         "send" => {
           if tokens.len() != 4 {
-            println!("Error: '{}' expected 3 arguments received {}", tokens[0], tokens.len() - 1);
+            println!(
+              "Error: '{}' expected 3 arguments received {}",
+              tokens[0],
+              tokens.len() - 1
+            );
             continue;
           }
 
@@ -110,7 +120,7 @@ impl Node {
                 eprintln!("Error: Failed to parse protocol, {e}");
                 continue;
               }
-            }
+            },
             Err(_) => {
               eprintln!("Error: Failed to parse protocol, must be u8");
               continue;
@@ -118,7 +128,6 @@ impl Node {
           };
 
           let data: Vec<u8> = tokens[3].as_bytes().to_vec();
-
 
           // TODO: get interface number from forwarding, routing table
           // TODO: check status of interface
@@ -138,8 +147,8 @@ impl Node {
             &data,
             identifier,
             true,
-            &[]
-            );
+            &[],
+          );
 
           let packet = match packet {
             Ok(packet) => packet,
@@ -157,7 +166,11 @@ impl Node {
 
         "up" | "down" => {
           if tokens.len() != 2 {
-            println!("Error: '{}' expected 1 argument received {}", tokens[0], tokens.len() - 1);
+            println!(
+              "Error: '{}' expected 1 argument received {}",
+              tokens[0],
+              tokens.len() - 1
+            );
             continue;
           }
 
@@ -166,7 +179,7 @@ impl Node {
             Err(_) => {
               println!("Error: interface id must be positive int");
               continue;
-            },
+            }
           };
 
           let res = if tokens[0] == "up" {
@@ -176,7 +189,7 @@ impl Node {
           };
 
           match res {
-            Ok(_) =>  (),
+            Ok(_) => (),
             Err(e) => println!("Error: setting interface status failed: {e}"),
           }
         }
@@ -187,20 +200,23 @@ impl Node {
               "Unrecognized command {}, expected one of ",
               "[interfaces | li, routes | lr, q, down INT, ",
               "up INT, send VIP PROTO STRING]"
-              ),
-              other
-              );
+            ),
+            other
+          );
         }
       }
     }
     Ok(())
   }
 
-  fn register_handler<F>(&mut self, protocol_num: Protocol, handler: HandlerFunction) {
+  pub fn register_handler(&mut self, protocol_num: Protocol, handler: HandlerFunction) {
     self.handlers.lock().unwrap().insert(protocol_num, handler);
   }
 
-  fn handle_packet(handlers: &Arc<Mutex<HandlerMap>>, packet: &IpPacket) -> Result<Option<IpPacket>> {
+  fn handle_packet(
+    handlers: &Arc<Mutex<HandlerMap>>,
+    packet: &IpPacket,
+  ) -> Result<Option<IpPacket>> {
     let protocol = packet.protocol();
     debug!("Handling packet with protocol {protocol}");
     let handlers = handlers.lock().unwrap();
