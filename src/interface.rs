@@ -25,7 +25,7 @@ impl Interface {
     outgoing_link: String,
     our_ip: Ipv4Addr,
     their_ip: Ipv4Addr,
-  ) -> Result<Interface> {
+    ) -> Result<Interface> {
     Ok(Interface {
       id,
       outgoing_link,
@@ -58,8 +58,8 @@ impl fmt::Display for Interface {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(
       f,
-      "{}: outgoing_link {}, their_ip {}, our_ip {}",
-      self.id, self.outgoing_link, self.their_ip, self.our_ip
-    )
+      "{}: status {:?}, outgoing_link {}, their_ip {}, our_ip {}",
+      self.id, self.state(), self.outgoing_link, self.their_ip, self.our_ip
+      )
   }
 }

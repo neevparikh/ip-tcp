@@ -57,26 +57,50 @@ impl Node {
     thread::spawn(move || {
       Node::listen(recv_rx, send_tx_clone, handlers_clone);
     });
+
     loop {
       let mut buf = String::new();
       stdin().read_line(&mut buf)?;
 
       let s = buf.as_str().trim();
-      if s.starts_with("interfaces") || s.starts_with("li") {
-        let interfaces = self.link_layer.get_interface_map();
+      let tokens: Vec<&str> = s.split(" ").collect();
+      debug_assert!(tokens.len() > 0);
+
+      if tokens[0] == "interfaces" || tokens[0] == "li" {
+        let interfaces = self.link_layer.get_interfaces();
         for interface in interfaces.iter() {
           println!("{}", interface);
         }
-      } else if s.starts_with("routes") || s.starts_with("lr") {
+      } else if tokens[0] == ("routes") || tokens[0] == "lr" {
         todo!();
-      } else if s.starts_with("q") {
+      } else if tokens[0] == "q" {
         break;
-      } else if s.starts_with("send") {
+      } else if tokens[0] == "send" {
         todo!();
-      } else if s.starts_with("up") {
-        todo!();
-      } else if s.starts_with("down") {
-        todo!();
+      } else if tokens[0] == "up" || tokens[0] == "down" {
+        if tokens.len() != 2 {
+          println!("Error: '{}' expected one argument received {}", tokens[0], tokens.len() - 1);
+          continue;
+        }
+
+        let interface_id: usize = match tokens[1].parse() {
+          Ok(num) => num,
+          Err(_) => {
+            println!("Error: interface id must be positive int");
+            continue;
+          },
+        };
+
+        let res = if tokens[0] == "up" {
+          self.link_layer.up(&interface_id)
+        } else {
+          self.link_layer.down(&interface_id)
+        };
+
+        match res {
+          Ok(_) =>  (),
+          Err(e) => println!("Error: setting interface status failed: {e}"),
+        }
       } else {
         eprintln!(
           concat!(
@@ -84,7 +108,7 @@ impl Node {
             "[interfaces | li, routes | lr, q, down INT, ",
             "up INT, send VIP PROTO STRING]"
             ),
-            s
+            tokens[0]
             );
       }
     }

@@ -25,7 +25,7 @@ pub struct LinkLayer {
 }
 
 impl LinkLayer {
-  pub fn get_interface_map(&self) -> RwLockReadGuard<Vec<Interface>> {
+  pub fn get_interfaces(&self) -> RwLockReadGuard<Vec<Interface>> {
     self.interfaces.read().unwrap()
   }
 
@@ -55,22 +55,22 @@ impl LinkLayer {
 
     let local_for_send = self.local_link.try_clone().unwrap();
     let addr_map_send = self.addr_to_id.clone();
-    let interface_map_send = self.interfaces.clone();
+    let interfaces_send = self.interfaces.clone();
 
     let local_for_recv = self.local_link.try_clone().unwrap();
     let addr_map_recv = self.addr_to_id.clone();
-    let interface_map_recv = self.interfaces.clone();
+    let interfaces_recv = self.interfaces.clone();
     let closed_recv = self.closed.clone();
 
     let _send = thread::spawn(move || {
-      LinkLayer::send_thread(send_rx, local_for_send, addr_map_send, interface_map_send)
+      LinkLayer::send_thread(send_rx, local_for_send, addr_map_send, interfaces_send)
     });
     let recv = thread::spawn(move || {
       LinkLayer::recv_thread(
         recv_tx,
         local_for_recv,
         addr_map_recv,
-        interface_map_recv,
+        interfaces_recv,
         closed_recv,
         )
     });
@@ -94,13 +94,25 @@ impl LinkLayer {
   }
 
   /// Sets the specified interface up
-  pub fn up(interface_id: &usize) -> Result<()> {
-    todo!();
+  pub fn up(&self, interface_id: &usize) -> Result<()> {
+    let mut interfaces = self.interfaces.write().unwrap();
+    if interface_id >= &interfaces.len() {
+      Err(anyhow!("Unknown interface id"))
+    } else {
+      interfaces[*interface_id].up();
+      Ok(())
+    }
   }
 
   /// Sets the specified interface down
-  pub fn down(interface_id: &usize) -> Result<()> {
-    todo!();
+  pub fn down(&self, interface_id: &usize) -> Result<()> {
+    let mut interfaces = self.interfaces.write().unwrap();
+    if interface_id >= &interfaces.len() {
+      Err(anyhow!("Unknown interface id"))
+    } else {
+      interfaces[*interface_id].down();
+      Ok(())
+    }
   }
 
   /// Returns the locked state of the specified interface
