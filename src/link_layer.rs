@@ -22,8 +22,6 @@ pub struct LinkLayer {
   local_link: UdpSocket,
   closed: Arc<AtomicBool>,
   recv_handle: Option<thread::JoinHandle<Result<()>>>,
-  send_tx: Option<Sender<IpPacket>>,
-  recv_rx: Option<Receiver<IpPacket>>,
 }
 
 impl LinkLayer {
@@ -46,14 +44,12 @@ impl LinkLayer {
       addr_to_id: Arc::new(interface_id_by_their_addr),
       local_link: config.local_link,
       closed: Arc::new(AtomicBool::new(false)),
-      send_tx: None,
-      recv_rx: None,
       recv_handle: None,
     }
   }
 
   /// Launches recv and send threads, returns closure to wait for threads to exit
-  pub fn run(&mut self) {
+  pub fn run(&mut self) -> (Sender<IpPacket>, Receiver<IpPacket>) {
     let (send_tx, send_rx) = channel();
     let (recv_tx, recv_rx) = channel();
 
@@ -76,11 +72,11 @@ impl LinkLayer {
         addr_map_recv,
         interface_map_recv,
         closed_recv,
-      )
+        )
     });
-    self.send_tx = Some(send_tx);
-    self.recv_rx = Some(recv_rx);
+
     self.recv_handle = Some(recv);
+    (send_tx, recv_rx)
   }
 
   /// Closes the recv/send threads
@@ -93,18 +89,8 @@ impl LinkLayer {
           eprintln!("Got panic in recv thread {:?}", e);
           Ok(())
         })
-        .unwrap();
+      .unwrap();
     }
-  }
-
-  /// Send packet to send_thread via channel
-  pub fn send(&self, packet: IpPacket) {
-    todo!();
-  }
-
-  /// Get packet from recv_thread via channel
-  pub fn recv(&self) -> Result<IpPacket> {
-    todo!();
   }
 
   /// Sets the specified interface up
@@ -127,7 +113,7 @@ impl LinkLayer {
     local_link: UdpSocket,
     addr_to_id: Arc<HashMap<Ipv4Addr, usize>>,
     interfaces: Arc<RwLock<Vec<Interface>>>,
-  ) -> Result<()> {
+    ) -> Result<()> {
     loop {
       match send_rx.recv() {
         Ok(packet) => {
@@ -157,7 +143,7 @@ impl LinkLayer {
     addr_to_id: Arc<HashMap<Ipv4Addr, usize>>,
     interfaces: Arc<RwLock<Vec<Interface>>>,
     closed: Arc<AtomicBool>,
-  ) -> Result<()> {
+    ) -> Result<()> {
     local_link.set_read_timeout(Some(Duration::from_millis(100)))?;
     let mut buf = Vec::new();
     buf.reserve(MAX_SIZE);
@@ -177,7 +163,7 @@ impl LinkLayer {
                 "Warning: Unknown source addr {}, local: {}, dropping...",
                 packet.source_address(),
                 src
-              );
+                );
             }
             Some(&id) => {
               let interfaces = interfaces.read().unwrap();
