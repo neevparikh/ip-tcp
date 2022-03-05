@@ -66,50 +66,57 @@ impl Node {
       let tokens: Vec<&str> = s.split(" ").collect();
       debug_assert!(tokens.len() > 0);
 
-      if tokens[0] == "interfaces" || tokens[0] == "li" {
-        let interfaces = self.link_layer.get_interfaces();
-        for interface in interfaces.iter() {
-          println!("{}", interface);
+      match tokens[0] {
+        "interfaces" | "li" => {
+          let interfaces = self.link_layer.get_interfaces();
+          for interface in interfaces.iter() {
+            println!("{}", interface);
+          }
         }
-      } else if tokens[0] == ("routes") || tokens[0] == "lr" {
-        todo!();
-      } else if tokens[0] == "q" {
-        break;
-      } else if tokens[0] == "send" {
-        todo!();
-      } else if tokens[0] == "up" || tokens[0] == "down" {
-        if tokens.len() != 2 {
-          println!("Error: '{}' expected one argument received {}", tokens[0], tokens.len() - 1);
-          continue;
+        "routes" | "lr" => {
+          todo!();
         }
-
-        let interface_id: usize = match tokens[1].parse() {
-          Ok(num) => num,
-          Err(_) => {
-            println!("Error: interface id must be positive int");
+        "q" => {
+          break;
+        }
+        "send" => {
+          todo!();
+        }
+        "up" | "down" => {
+          if tokens.len() != 2 {
+            println!("Error: '{}' expected 1 argument received {}", tokens[0], tokens.len() - 1);
             continue;
-          },
-        };
+          }
 
-        let res = if tokens[0] == "up" {
-          self.link_layer.up(&interface_id)
-        } else {
-          self.link_layer.down(&interface_id)
-        };
+          let interface_id: usize = match tokens[1].parse() {
+            Ok(num) => num,
+            Err(_) => {
+              println!("Error: interface id must be positive int");
+              continue;
+            },
+          };
 
-        match res {
-          Ok(_) =>  (),
-          Err(e) => println!("Error: setting interface status failed: {e}"),
-        }
-      } else {
-        eprintln!(
-          concat!(
-            "Unrecognized command {}, expected one of ",
-            "[interfaces | li, routes | lr, q, down INT, ",
-            "up INT, send VIP PROTO STRING]"
-            ),
-            tokens[0]
-            );
+          let res = if tokens[0] == "up" {
+            self.link_layer.up(&interface_id)
+          } else {
+            self.link_layer.down(&interface_id)
+          };
+
+          match res {
+            Ok(_) =>  (),
+            Err(e) => println!("Error: setting interface status failed: {e}"),
+          }
+        };
+        other => {
+          eprintln!(
+            concat!(
+              "Unrecognized command {}, expected one of ",
+              "[interfaces | li, routes | lr, q, down INT, ",
+              "up INT, send VIP PROTO STRING]"
+              ),
+              tokens[0]
+              );
+        };
       }
     }
     Ok(())
