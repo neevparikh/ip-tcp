@@ -44,7 +44,7 @@ impl Node {
       } else if s.starts_with("routes") || s.starts_with("lr") {
         todo!();
       } else if s.starts_with("q") {
-        todo!();
+        break;
       } else if s.starts_with("send") {
         todo!();
       } else if s.starts_with("up") {
@@ -62,6 +62,7 @@ impl Node {
         );
       }
     }
+    Ok(())
   }
 
   fn register_handler<F>(&mut self, protocol_num: Protocol, handler: HandlerFunction) {
