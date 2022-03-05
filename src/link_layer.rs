@@ -14,7 +14,7 @@ use anyhow::{anyhow, Result};
 const MAX_SIZE: usize = 65536;
 
 pub struct LinkLayer {
-  interfaces: Arc<RwLock<HashMap<usize, Interface>>>,
+  interfaces: Arc<RwLock<Vec<Interface>>>,
   addr_to_id: Arc<HashMap<Ipv4Addr, usize>>,
   local_link: UdpSocket,
   send_tx: Option<Sender<IpPacket>>,
@@ -22,20 +22,22 @@ pub struct LinkLayer {
 }
 
 impl LinkLayer {
+  pub fn get_interface_map(&self) -> RwLockReadGuard<Vec<Interface>> {
+    self.interfaces.read().unwrap()
+  }
+
   /// Builds up internal interface map
   pub fn new(config: LnxConfig) -> LinkLayer {
     // build interface map
-    let mut interfaces = HashMap::new();
     let mut interface_id_by_their_addr = HashMap::new();
 
-    for (id, interface) in config.interfaces.into_iter().enumerate() {
+    for (id, interface) in config.interfaces.iter().enumerate() {
       let their_ip = interface.their_ip.clone();
-      interfaces.insert(id, interface);
       interface_id_by_their_addr.insert(their_ip, id);
     }
 
     LinkLayer {
-      interfaces: Arc::new(RwLock::new(interfaces)),
+      interfaces: Arc::new(RwLock::new(config.interfaces)),
       addr_to_id: Arc::new(interface_id_by_their_addr),
       local_link: config.local_link,
       send_tx: None,
@@ -98,18 +100,18 @@ impl LinkLayer {
     send_rx: Receiver<IpPacket>,
     local_link: UdpSocket,
     addr_to_id: Arc<HashMap<Ipv4Addr, usize>>,
-    id_to_interface: Arc<RwLock<HashMap<usize, Interface>>>,
+    interfaces: Arc<RwLock<Vec<Interface>>>,
   ) -> Result<()> {
     loop {
       match send_rx.recv() {
         Ok(packet) => {
           let dst_ip_addr = packet.destination_address();
           let id = addr_to_id[&dst_ip_addr];
-          let map = id_to_interface.read().unwrap();
-          let interface = &map[&id];
+          let interfaces = interfaces.read().unwrap();
+          let interface = &interfaces[id];
           let dst_socket_addr = interface.outgoing_link;
           let state = interface.state().clone();
-          drop(map);
+          drop(interfaces);
           if state == State::UP {
             local_link.send_to(&packet.pack(), dst_socket_addr)?;
           }
@@ -127,7 +129,7 @@ impl LinkLayer {
     read_tx: Sender<IpPacket>,
     local_link: UdpSocket,
     addr_to_id: Arc<HashMap<Ipv4Addr, usize>>,
-    id_to_interface: Arc<RwLock<HashMap<usize, Interface>>>,
+    interfaces: Arc<RwLock<Vec<Interface>>>,
   ) -> Result<()> {
     let mut buf = Vec::new();
     buf.reserve(MAX_SIZE);
@@ -149,11 +151,11 @@ impl LinkLayer {
                 src
               );
             }
-            Some(id) => {
-              let map = id_to_interface.read().unwrap();
-              let interface = &map[&id];
+            Some(&id) => {
+              let interfaces = interfaces.read().unwrap();
+              let interface = &interfaces[id];
               let state = interface.state().clone();
-              drop(map);
+              drop(interfaces);
               if state == State::UP {
                 match read_tx.send(packet) {
                   Ok(_) => (),

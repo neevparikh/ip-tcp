@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::fmt;
 use std::net::{Ipv4Addr, SocketAddr};
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -50,5 +51,15 @@ impl Interface {
 
   pub fn state(&self) -> &State {
     return &self.state;
+  }
+}
+
+impl fmt::Display for Interface {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(
+      f,
+      "{}: outgoing_link {}, their_ip {}, our_ip {}",
+      self.id, self.outgoing_link, self.their_ip, self.our_ip
+    )
   }
 }
