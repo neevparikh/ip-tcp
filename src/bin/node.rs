@@ -1,6 +1,8 @@
 use clap::Parser;
 
+use anyhow::Result;
 use ip::lnx_config::LnxConfig;
+use ip::node::Node;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -10,7 +12,10 @@ pub struct Args {
   lnx_filename: String,
 }
 
-fn main() {
+fn main() -> Result<()> {
   let args = Args::parse();
-  dbg!(LnxConfig::new(&args.lnx_filename));
+  let config = LnxConfig::new(&args.lnx_filename)?;
+  let mut node = Node::new(config);
+  node.run()?;
+  Ok(())
 }

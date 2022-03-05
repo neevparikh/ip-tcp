@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::fmt;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum State {
@@ -13,7 +13,7 @@ pub enum State {
 #[derive(Debug)]
 pub struct Interface {
   pub id: usize,
-  pub outgoing_link: SocketAddr,
+  pub outgoing_link: String,
   pub our_ip: Ipv4Addr,
   pub their_ip: Ipv4Addr,
   state: State,
@@ -22,7 +22,7 @@ pub struct Interface {
 impl Interface {
   pub fn new(
     id: usize,
-    outgoing_link: SocketAddr,
+    outgoing_link: String,
     our_ip: Ipv4Addr,
     their_ip: Ipv4Addr,
   ) -> Result<Interface> {

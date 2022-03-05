@@ -109,7 +109,7 @@ impl LinkLayer {
           let id = addr_to_id[&dst_ip_addr];
           let interfaces = interfaces.read().unwrap();
           let interface = &interfaces[id];
-          let dst_socket_addr = interface.outgoing_link;
+          let dst_socket_addr = interface.outgoing_link.clone();
           let state = interface.state().clone();
           drop(interfaces);
           if state == State::UP {
