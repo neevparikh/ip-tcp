@@ -2,13 +2,14 @@ use std::collections::HashMap;
 use std::io::stdin;
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::{thread, option};
+use std::net::Ipv4Addr;
 
 use anyhow::{anyhow, Result};
-
-use crate::edebug;
+use shellwords;
 
 // use super::debug;
+use crate::{edebug, debug};
 use super::ip_packet::IpPacket;
 use super::link_layer::LinkLayer;
 use super::lnx_config::LnxConfig;
@@ -63,25 +64,97 @@ impl Node {
       stdin().read_line(&mut buf)?;
 
       let s = buf.as_str().trim();
-      let tokens: Vec<&str> = s.split(" ").collect();
+      let tokens: Vec<String> = match shellwords::split(s) {
+        Ok(tokens) => tokens,
+        Err(e) => {
+          eprintln!("Error: {e}");
+          continue;
+        }
+      };
       debug_assert!(tokens.len() > 0);
 
-      match tokens[0] {
+      match &*tokens[0] {
         "interfaces" | "li" => {
           let interfaces = self.link_layer.get_interfaces();
           for interface in interfaces.iter() {
             println!("{}", interface);
           }
         }
+
         "routes" | "lr" => {
           todo!();
         }
+
         "q" => {
           break;
         }
+
         "send" => {
-          todo!();
+          if tokens.len() != 4 {
+            println!("Error: '{}' expected 3 arguments received {}", tokens[0], tokens.len() - 1);
+            continue;
+          }
+
+          let their_ip: Ipv4Addr = match tokens[1].parse::<Ipv4Addr>() {
+            Ok(ip) => ip,
+            Err(_) => {
+              eprintln!("Error: Failed to parse vip");
+              continue;
+            }
+          };
+
+          let protocol: Protocol = match tokens[2].parse::<u8>() {
+            Ok(protocol_num) => match Protocol::try_from(protocol_num) {
+              Ok(protocol) => protocol,
+              Err(e) => {
+                eprintln!("Error: Failed to parse protocol, {e}");
+                continue;
+              }
+            }
+            Err(_) => {
+              eprintln!("Error: Failed to parse protocol, must be u8");
+              continue;
+            }
+          };
+
+          let data: Vec<u8> = tokens[3].as_bytes().to_vec();
+
+
+          // TODO: get interface number from forwarding, routing table
+          // TODO: check status of interface
+          let outgoing_interface = 0usize;
+          let source_address = self.link_layer.get_our_ip(&outgoing_interface).unwrap();
+
+          // TODO: figure out values for these fields
+          let type_of_service = 0u8;
+          let time_to_live = 2u8;
+          let identifier = 2u16;
+          let packet = IpPacket::new(
+            source_address,
+            their_ip,
+            protocol,
+            type_of_service,
+            time_to_live,
+            &data,
+            identifier,
+            true,
+            &[]
+            );
+
+          let packet = match packet {
+            Ok(packet) => packet,
+            Err(e) => {
+              eprintln!("Error: Failed to create ip packet, {e}");
+              continue;
+            }
+          };
+
+          if let Err(_) = send_tx.send(packet) {
+            eprintln!("LinkLayer closed unexpectedly");
+            break;
+          }
         }
+
         "up" | "down" => {
           if tokens.len() != 2 {
             println!("Error: '{}' expected 1 argument received {}", tokens[0], tokens.len() - 1);
@@ -106,7 +179,8 @@ impl Node {
             Ok(_) =>  (),
             Err(e) => println!("Error: setting interface status failed: {e}"),
           }
-        };
+        }
+
         other => {
           eprintln!(
             concat!(
@@ -114,9 +188,9 @@ impl Node {
               "[interfaces | li, routes | lr, q, down INT, ",
               "up INT, send VIP PROTO STRING]"
               ),
-              tokens[0]
+              other
               );
-        };
+        }
       }
     }
     Ok(())
@@ -128,6 +202,7 @@ impl Node {
 
   fn handle_packet(handlers: &Arc<Mutex<HandlerMap>>, packet: &IpPacket) -> Result<Option<IpPacket>> {
     let protocol = packet.protocol();
+    debug!("Handling packet with protocol {protocol}");
     let handlers = handlers.lock().unwrap();
     let handler = handlers.get(&protocol);
 

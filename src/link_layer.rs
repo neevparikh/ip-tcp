@@ -1,3 +1,5 @@
+use crate::interface;
+
 use super::debug;
 use super::interface::{Interface, State};
 use super::ip_packet::IpPacket;
@@ -116,8 +118,23 @@ impl LinkLayer {
   }
 
   /// Returns the locked state of the specified interface
-  pub fn get_state(interface_id: &usize) -> RwLockReadGuard<State> {
-    todo!();
+  pub fn get_state(&self, interface_id: &usize) -> Result<State> {
+    let interfaces = self.get_interfaces();
+    if interface_id >= &interfaces.len() {
+      Err(anyhow!("Unknown interface id"))
+    } else {
+      Ok(interfaces[*interface_id].state())
+    }
+  }
+
+  /// Returns the locked state of the specified interface
+  pub fn get_our_ip(&self, interface_id: &usize) -> Result<Ipv4Addr> {
+    let interfaces = self.get_interfaces();
+    if interface_id >= &interfaces.len() {
+      Err(anyhow!("Unknown interface id"))
+    } else {
+      Ok(interfaces[*interface_id].our_ip)
+    }
   }
 
   fn send_thread(
@@ -157,13 +174,12 @@ impl LinkLayer {
     closed: Arc<AtomicBool>,
     ) -> Result<()> {
     local_link.set_read_timeout(Some(Duration::from_millis(100)))?;
-    let mut buf = Vec::new();
-    buf.reserve(MAX_SIZE);
+    let mut buf = [0u8; MAX_SIZE];
     loop {
       match local_link.recv_from(&mut buf) {
         Ok((bytes_read, src)) => {
           let packet = match IpPacket::unpack(&buf[..bytes_read]) {
-            Err(_e) => {
+            Err(e) => {
               debug!("Warning: Malformed packet from {}, dropping...", src);
               continue;
             }

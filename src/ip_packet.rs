@@ -128,6 +128,7 @@ impl FragmentOffset {
   }
 }
 
+#[derive(Debug)]
 pub struct IpPacket {
   /// Contains all of the mandatory header information
   header: [u8; 20],
@@ -176,6 +177,9 @@ impl IpPacket {
     packet.set_source_address(source);
     packet.set_destination_address(destination);
 
+    // TODO: this is necessary which doesn't make any sense
+    packet.calculate_and_set_checksum();
+
     Ok(packet)
   }
 
@@ -215,6 +219,8 @@ impl IpPacket {
           ));
     }
 
+    packet.data = bytes[header_length_bytes..total_length].to_vec();
+
     packet.validate_header()?;
 
     return Ok(packet);
@@ -225,14 +231,15 @@ impl IpPacket {
     self.validate_checksum()?;
     self.validate_options()?;
 
-    todo!("Figure out what else needs to be validated here");
+    // TODO
+    // todo!("Figure out what else needs to be validated here");
+    Ok(())
   }
 
   /// Turn packet in bytes to be sent over network
   /// TODO: should this consume the packet
   pub fn pack(&self) -> Vec<u8> {
-    let mut res = Vec::new();
-    res.copy_from_slice(&self.header);
+    let mut res = self.header.to_vec();
     debug_assert!(self.option_data.len() % 4 == 0);
     res.extend(&self.option_data);
     res.extend(&self.data);
@@ -297,16 +304,17 @@ impl IpPacket {
 
   /// Performs full checksum calculation
   fn calculate_checksum(&self) -> u16 {
-    let checksum: u16 = self
-      .option_data
-      .iter()
-      .fold(0u16, |a, b| a.wrapping_add((*b) as u16));
-    let checksum: u16 = self
-      .header
-      .iter()
-      .fold(0u16, |a, b| a.wrapping_add((*b) as u16));
+    let mut checksum = 0u16;
+    for i in 0..10 {
+      checksum = checksum.wrapping_add(convert_to_u16(&self.header[2*i], &self.header[2*i + 1]));
+    }
 
-    return checksum;
+    debug_assert!(self.option_data.len() % 4 == 0);
+    for i in 0..(self.option_data.len() / 2) {
+      checksum = checksum.wrapping_add(convert_to_u16(&self.option_data[2*i], &self.option_data[2*i + 1]));
+    }
+
+    checksum.wrapping_sub(self.header_checksum())
   }
 
   fn validate_checksum(&self) -> Result<()> {

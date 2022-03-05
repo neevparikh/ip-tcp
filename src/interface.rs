@@ -49,8 +49,8 @@ impl Interface {
     todo!()
   }
 
-  pub fn state(&self) -> &State {
-    return &self.state;
+  pub fn state(&self) -> State {
+    return self.state;
   }
 }
 
