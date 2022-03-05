@@ -60,7 +60,6 @@ impl LinkLayer {
     let local_for_send = self.local_link.try_clone().unwrap();
     let addr_map_send = self.addr_to_id.clone();
     let interface_map_send = self.interfaces.clone();
-    let closed_send = self.closed.clone();
 
     let local_for_recv = self.local_link.try_clone().unwrap();
     let addr_map_recv = self.addr_to_id.clone();
@@ -68,13 +67,7 @@ impl LinkLayer {
     let closed_recv = self.closed.clone();
 
     let _send = thread::spawn(move || {
-      LinkLayer::send_thread(
-        send_rx,
-        local_for_send,
-        addr_map_send,
-        interface_map_send,
-        closed_send,
-      )
+      LinkLayer::send_thread(send_rx, local_for_send, addr_map_send, interface_map_send)
     });
     let recv = thread::spawn(move || {
       LinkLayer::recv_thread(
@@ -134,7 +127,6 @@ impl LinkLayer {
     local_link: UdpSocket,
     addr_to_id: Arc<HashMap<Ipv4Addr, usize>>,
     interfaces: Arc<RwLock<Vec<Interface>>>,
-    closed: Arc<AtomicBool>,
   ) -> Result<()> {
     loop {
       match send_rx.recv() {
