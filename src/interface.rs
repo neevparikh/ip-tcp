@@ -37,7 +37,7 @@ impl Interface {
       outgoing_link_addr,
       our_ip,
       their_ip,
-      state: State::DOWN,
+      state: State::UP,
     })
   }
 
