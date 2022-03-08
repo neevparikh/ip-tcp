@@ -30,7 +30,7 @@ impl ForwardingTable {
 
     // TODO: there has to be a better way to do this:
     let mut next_hop = None;
-    for prefix_len in 0..32 {
+    for prefix_len in (0..=32).rev() {
       let ip_net = Ipv4Net::new(ip, prefix_len).unwrap();
       if let Some(&hop) = table.get(&ip_net) {
         next_hop = Some(hop);
@@ -44,6 +44,6 @@ impl ForwardingTable {
     }
   }
 
-  pub fn send_keep_alive_thread(send_tx: Sender<(Option<usize>, IpPacket)>) {
+  pub fn start_send_keep_alive_thread(send_tx: Sender<(Option<usize>, IpPacket)>) {
   }
 }
