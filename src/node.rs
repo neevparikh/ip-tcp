@@ -3,20 +3,19 @@ use std::io::stdin;
 use std::net::Ipv4Addr;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::{option, thread};
+use std::thread;
 
 use anyhow::{anyhow, Result};
 use shellwords;
 
 // use super::debug;
 use super::ip_packet::IpPacket;
+use super::HandlerFunction;
 use super::link_layer::LinkLayer;
 use super::lnx_config::LnxConfig;
 use super::protocol::Protocol;
 use crate::{debug, edebug};
 
-// TODO: Passing the whole packet might leak too much information
-type HandlerFunction = Box<dyn (Fn(&IpPacket) -> Option<IpPacket>) + Send>;
 type HandlerMap = HashMap<Protocol, HandlerFunction>;
 
 pub struct Node {
@@ -36,7 +35,7 @@ impl Node {
     recv_rx: Receiver<IpPacket>,
     send_tx: Sender<IpPacket>,
     handlers: Arc<Mutex<HandlerMap>>,
-  ) {
+    ) {
     loop {
       match recv_rx.recv() {
         Ok(packet) => match Node::handle_packet(&handlers, &packet) {
@@ -101,7 +100,7 @@ impl Node {
               "Error: '{}' expected 3 arguments received {}",
               tokens[0],
               tokens.len() - 1
-            );
+              );
             continue;
           }
 
@@ -148,7 +147,7 @@ impl Node {
             identifier,
             true,
             &[],
-          );
+            );
 
           let packet = match packet {
             Ok(packet) => packet,
@@ -170,7 +169,7 @@ impl Node {
               "Error: '{}' expected 1 argument received {}",
               tokens[0],
               tokens.len() - 1
-            );
+              );
             continue;
           }
 
@@ -200,9 +199,9 @@ impl Node {
               "Unrecognized command {}, expected one of ",
               "[interfaces | li, routes | lr, q, down INT, ",
               "up INT, send VIP PROTO STRING]"
-            ),
-            other
-          );
+              ),
+              other
+              );
         }
       }
     }
@@ -216,7 +215,7 @@ impl Node {
   fn handle_packet(
     handlers: &Arc<Mutex<HandlerMap>>,
     packet: &IpPacket,
-  ) -> Result<Option<IpPacket>> {
+    ) -> Result<Option<IpPacket>> {
     let protocol = packet.protocol();
     debug!("Handling packet with protocol {protocol}");
     let handlers = handlers.lock().unwrap();
