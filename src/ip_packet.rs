@@ -55,13 +55,13 @@ impl FragmentOffset {
     dont_fragment: bool,
     more_fragments: bool,
     fragment_offset: u16,
-    ) -> Result<FragmentOffset> {
+  ) -> Result<FragmentOffset> {
     if fragment_offset > FragmentOffset::MAX_FRAGMENT_OFFSET {
       return Err(anyhow!(
-          "fragment_offset has max value of {}, value was {}",
-          FragmentOffset::MAX_FRAGMENT_OFFSET,
-          fragment_offset,
-          ));
+        "fragment_offset has max value of {}, value was {}",
+        FragmentOffset::MAX_FRAGMENT_OFFSET,
+        fragment_offset,
+      ));
     }
 
     Ok(FragmentOffset {
@@ -75,8 +75,8 @@ impl FragmentOffset {
   pub fn unpack(high_order_byte: &u8, low_order_byte: &u8) -> Result<FragmentOffset> {
     if *high_order_byte & 0b1000_0000u8 != 0 {
       return Err(anyhow!(
-          "First bit of fragment flags is reserved and must be 0"
-          ));
+        "First bit of fragment flags is reserved and must be 0"
+      ));
     }
     let dont_fragment = bool::from(*high_order_byte & 0b0100_0000u8 != 0);
     let more_fragments = bool::from(*high_order_byte & 0b0010_0000u8 != 0);
@@ -113,10 +113,10 @@ impl FragmentOffset {
   fn set_fragment_offset(&mut self, fragment_offset: u16) -> Result<()> {
     if fragment_offset > FragmentOffset::MAX_FRAGMENT_OFFSET {
       return Err(anyhow!(
-          "fragment_offset has max value of {}, value was {}",
-          FragmentOffset::MAX_FRAGMENT_OFFSET,
-          fragment_offset,
-          ));
+        "fragment_offset has max value of {}, value was {}",
+        FragmentOffset::MAX_FRAGMENT_OFFSET,
+        fragment_offset,
+      ));
     }
 
     self.fragment_offset = fragment_offset;
@@ -151,7 +151,7 @@ impl IpPacket {
     identifier: u16,
     dont_fragment: bool,
     option_data: &[u8],
-    ) -> Result<IpPacket> {
+  ) -> Result<IpPacket> {
     let mut packet = IpPacket {
       header: [0u8; 20],
       option_data: option_data.to_vec(),
@@ -189,8 +189,8 @@ impl IpPacket {
     let bytes_len = bytes.len();
     if bytes_len < 20 {
       return Err(anyhow!(
-          "ip packet must be >= 20 bytes, len was {bytes_len}"
-          ));
+        "ip packet must be >= 20 bytes, len was {bytes_len}"
+      ));
     }
 
     let mut packet = IpPacket {
@@ -206,8 +206,8 @@ impl IpPacket {
 
     if bytes_len < header_length_bytes {
       return Err(anyhow!(
-          "header length is {header_length_bytes}, but bytes_len is {bytes_len}"
-          ));
+        "header length is {header_length_bytes}, but bytes_len is {bytes_len}"
+      ));
     }
 
     packet.option_data = bytes[20..header_length_bytes].to_vec();
@@ -215,8 +215,8 @@ impl IpPacket {
     let total_length = usize::from(packet.total_length());
     if bytes_len < total_length {
       return Err(anyhow!(
-          "Total length is {total_length}, but bytes_len is {bytes_len}"
-          ));
+        "Total length is {total_length}, but bytes_len is {bytes_len}"
+      ));
     }
 
     packet.data = bytes[header_length_bytes..total_length].to_vec();
@@ -294,7 +294,7 @@ impl IpPacket {
       self.header[13],
       self.header[14],
       self.header[15],
-      )
+    )
   }
 
   pub fn destination_address(&self) -> Ipv4Addr {
@@ -303,19 +303,23 @@ impl IpPacket {
       self.header[17],
       self.header[18],
       self.header[19],
-      )
+    )
   }
 
   /// Performs full checksum calculation
   fn calculate_checksum(&self) -> u16 {
     let mut checksum = 0u16;
     for i in 0..10 {
-      checksum = checksum.wrapping_add(convert_to_u16(&self.header[2*i], &self.header[2*i + 1]));
+      checksum =
+        checksum.wrapping_add(convert_to_u16(&self.header[2 * i], &self.header[2 * i + 1]));
     }
 
     debug_assert!(self.option_data.len() % 4 == 0);
     for i in 0..(self.option_data.len() / 2) {
-      checksum = checksum.wrapping_add(convert_to_u16(&self.option_data[2*i], &self.option_data[2*i + 1]));
+      checksum = checksum.wrapping_add(convert_to_u16(
+        &self.option_data[2 * i],
+        &self.option_data[2 * i + 1],
+      ));
     }
 
     checksum.wrapping_sub(self.header_checksum())
@@ -328,8 +332,8 @@ impl IpPacket {
       Ok(())
     } else {
       Err(anyhow!(
-          "Checksum invalid, expected {expected}, actual {actual}"
-          ))
+        "Checksum invalid, expected {expected}, actual {actual}"
+      ))
     }
   }
 
@@ -439,8 +443,8 @@ impl IpPacket {
   fn validate_options(&self) -> Result<()> {
     if self.option_data.len() % 4 != 0 {
       return Err(anyhow!(
-          "option_data should be padded so that len is multiple of 4"
-          ));
+        "option_data should be padded so that len is multiple of 4"
+      ));
     }
 
     // TODO: validate the actual fields
@@ -537,18 +541,18 @@ mod tests {
     assert_eq!(
       convert_to_u16(&high_order_byte, &low_order_byte),
       0b1111_1111_0000_0000u16
-      );
+    );
     assert_eq!(
       convert_to_u16(&low_order_byte, &high_order_byte),
       0b0000_0000_1111_1111u16
-      );
+    );
 
     let low_order_byte = 0b0110_0101u8;
     let high_order_byte = 0b1010_1001u8;
     assert_eq!(
       convert_to_u16(&high_order_byte, &low_order_byte),
       0b1010_1001_0110_0101u16
-      );
+    );
   }
 
   #[test]
@@ -561,7 +565,7 @@ mod tests {
     assert_eq!(
       fragment_offset.to_bytes(),
       (high_order_byte, low_order_byte)
-      );
+    );
 
     let high_order_byte = 0b0111_0010;
     let low_order_byte = 0b0010_0100;
@@ -573,7 +577,7 @@ mod tests {
     assert_eq!(
       fragment_offset.to_bytes(),
       (high_order_byte, low_order_byte)
-      );
+    );
 
     let invalid_offset = FragmentOffset::MAX_FRAGMENT_OFFSET + 1;
     assert!(FragmentOffset::new(true, true, invalid_offset).is_err());
