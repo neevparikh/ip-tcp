@@ -32,20 +32,21 @@ impl Node {
   }
 
   fn listen(
-    recv_rx: Receiver<IpPacket>,
-    send_tx: Sender<IpPacket>,
+    recv_rx: Receiver<(usize, IpPacket)>,
+    send_tx: Sender<(usize, IpPacket)>,
     handlers: Arc<Mutex<HandlerMap>>,
     ) {
     loop {
       match recv_rx.recv() {
-        Ok(packet) => match Node::handle_packet(&handlers, &packet) {
-          Ok(Some(response)) => {
-            if let Err(_e) = send_tx.send(response) {
-              edebug!("Closing Node listen thread");
-              return;
+        Ok((interface, packet)) => match Node::handle_packet(&handlers, interface, &packet) {
+          Ok(responses) => {
+            for response in responses {
+              if let Err(_e) = send_tx.send(response) {
+                edebug!("Closing Node listen thread");
+                return;
+              }
             }
           }
-          Ok(None) => (),
           Err(e) => eprintln!("Packet handler errored: {e}"),
         },
         Err(_) => {
@@ -157,7 +158,7 @@ impl Node {
             }
           };
 
-          if let Err(_) = send_tx.send(packet) {
+          if let Err(_) = send_tx.send((outgoing_interface, packet)) {
             eprintln!("LinkLayer closed unexpectedly");
             break;
           }
@@ -214,8 +215,9 @@ impl Node {
 
   fn handle_packet(
     handlers: &Arc<Mutex<HandlerMap>>,
+    interface: usize,
     packet: &IpPacket,
-    ) -> Result<Option<IpPacket>> {
+    ) -> Result<Vec<(usize, IpPacket)>> {
     let protocol = packet.protocol();
     debug!("Handling packet with protocol {protocol}");
     let handlers = handlers.lock().unwrap();

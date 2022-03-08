@@ -1,6 +1,6 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::fmt;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum State {
@@ -14,6 +14,7 @@ pub enum State {
 pub struct Interface {
   pub id: usize,
   pub outgoing_link: String,
+  pub outgoing_link_addr: SocketAddr,
   pub our_ip: Ipv4Addr,
   pub their_ip: Ipv4Addr,
   state: State,
@@ -26,9 +27,14 @@ impl Interface {
     our_ip: Ipv4Addr,
     their_ip: Ipv4Addr,
     ) -> Result<Interface> {
+    let outgoing_link_addr = match outgoing_link.to_socket_addrs()?.next() {
+      Some(addr) => addr,
+      None => return Err(anyhow!("Invalid socket_addr: {outgoing_link}")),
+    };
     Ok(Interface {
       id,
       outgoing_link,
+      outgoing_link_addr,
       our_ip,
       their_ip,
       state: State::DOWN,
