@@ -33,7 +33,7 @@ impl Node {
 
   fn listen(
     recv_rx: Receiver<(usize, IpPacket)>,
-    send_tx: Sender<(usize, IpPacket)>,
+    send_tx: Sender<(Option<usize>, IpPacket)>,
     handlers: Arc<Mutex<HandlerMap>>,
     ) {
     loop {
@@ -158,7 +158,7 @@ impl Node {
             }
           };
 
-          if let Err(_) = send_tx.send((outgoing_interface, packet)) {
+          if let Err(_) = send_tx.send((Some(outgoing_interface), packet)) {
             eprintln!("LinkLayer closed unexpectedly");
             break;
           }
@@ -217,7 +217,7 @@ impl Node {
     handlers: &Arc<Mutex<HandlerMap>>,
     interface: usize,
     packet: &IpPacket,
-    ) -> Result<Vec<(usize, IpPacket)>> {
+    ) -> Result<Vec<(Option<usize>, IpPacket)>> {
     let protocol = packet.protocol();
     debug!("Handling packet with protocol {protocol}");
     let handlers = handlers.lock().unwrap();

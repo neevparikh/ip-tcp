@@ -9,6 +9,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
+use crate::interface;
+
 use super::debug;
 use super::interface::{Interface, State};
 use super::ip_packet::IpPacket;
@@ -49,8 +51,10 @@ impl LinkLayer {
     }
   }
 
-  /// Launches recv and send threads, returns closure to wait for threads to exit
-  pub fn run(&mut self) -> (Sender<(usize, IpPacket)>, Receiver<(usize, IpPacket)>) {
+  /// Launches recv and send threads, returns channels which can be used to send and receive
+  /// Note that if the interface_id is None in the send, the message will be broadcast on all
+  /// interfaces which are currenlty set to up
+  pub fn run(&mut self) -> (Sender<(Option<usize>, IpPacket)>, Receiver<(usize, IpPacket)>) {
     let (send_tx, send_rx) = channel();
     let (recv_tx, recv_rx) = channel();
 
@@ -137,21 +141,29 @@ impl LinkLayer {
   }
 
   fn send_thread(
-    send_rx: Receiver<(usize, IpPacket)>,
+    send_rx: Receiver<(Option<usize>, IpPacket)>,
     local_link: UdpSocket,
     addr_to_id: Arc<HashMap<SocketAddr, usize>>,
     interfaces: Arc<RwLock<Vec<Interface>>>,
     ) -> Result<()> {
     loop {
       match send_rx.recv() {
-        Ok((id, packet)) => {
+        Ok((id_opt, packet)) => {
           let interfaces = interfaces.read().unwrap();
-          let interface = &interfaces[id];
-          let dst_socket_addr = interface.outgoing_link_addr.clone();
-          let state = interface.state().clone();
-          drop(interfaces);
-          if state == State::UP {
-            local_link.send_to(&packet.pack(), dst_socket_addr)?;
+          let send_packet_to_id = |interface: &Interface| -> Result<()> {
+            let dst_socket_addr = interface.outgoing_link_addr.clone();
+            let state = interface.state().clone();
+            if state == State::UP {
+              local_link.send_to(&packet.pack(), dst_socket_addr)?;
+            }
+            Ok(())
+          };
+
+          match id_opt {
+            Some(id) => send_packet_to_id(&interfaces[id])?,
+            None => for interface in interfaces.iter() {
+              send_packet_to_id(interface)?;
+            }
           }
         }
         Err(_e) => {

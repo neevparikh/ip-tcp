@@ -9,4 +9,4 @@ pub mod driver;
 pub mod forwarding_table;
 
 use ip_packet::IpPacket;
-pub type HandlerFunction = Box<dyn (Fn(&IpPacket) -> Vec<(usize, IpPacket)>) + Send>;
+pub type HandlerFunction = Box<dyn (Fn(&IpPacket) -> Vec<(Option<usize>, IpPacket)>) + Send>;

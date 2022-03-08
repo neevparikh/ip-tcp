@@ -1,10 +1,11 @@
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::ip_packet;
+use super::ip_packet::IpPacket;
 
 use super::HandlerFunction;
 
@@ -41,5 +42,8 @@ impl ForwardingTable {
       Some(hop) => Some(hop.0),
       None => None,
     }
+  }
+
+  pub fn send_keep_alive_thread(send_tx: Sender<(Option<usize>, IpPacket)>) {
   }
 }
