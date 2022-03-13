@@ -1,10 +1,10 @@
-use crate::interface::Interface;
-
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::net::UdpSocket;
 
 use anyhow::{anyhow, Result};
+
+use crate::interface::Interface;
 
 #[derive(Debug)]
 pub struct LnxConfig {

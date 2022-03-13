@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use std::net::{Ipv4Addr, UdpSocket, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
@@ -9,19 +9,16 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
-use crate::interface;
-
-use super::debug;
-use super::interface::{Interface, State};
-use super::ip_packet::IpPacket;
-use super::lnx_config::LnxConfig;
-
+use crate::interface::{Interface, State};
+use crate::ip_packet::IpPacket;
+use crate::lnx_config::LnxConfig;
+use crate::{debug, InterfaceId};
 
 const MAX_SIZE: usize = 65536;
 
 pub struct LinkLayer {
   interfaces: Arc<RwLock<Vec<Interface>>>,
-  addr_to_id: Arc<HashMap<SocketAddr, usize>>,
+  addr_to_id: Arc<HashMap<SocketAddr, InterfaceId>>,
   local_link: UdpSocket,
   closed: Arc<AtomicBool>,
   recv_handle: Option<thread::JoinHandle<Result<()>>>,
@@ -39,6 +36,7 @@ impl LinkLayer {
 
     for (id, interface) in config.interfaces.iter().enumerate() {
       let their_socket_addr = interface.outgoing_link_addr.clone();
+      let their_ip = interface.their_ip.clone();
       interface_id_by_their_addr.insert(their_socket_addr, id);
     }
 
@@ -53,8 +51,13 @@ impl LinkLayer {
 
   /// Launches recv and send threads, returns channels which can be used to send and receive
   /// Note that if the interface_id is None in the send, the message will be broadcast on all
-  /// interfaces which are currenlty set to up
-  pub fn run(&mut self) -> (Sender<(Option<usize>, IpPacket)>, Receiver<(usize, IpPacket)>) {
+  /// interfaces which are currently set to up
+  pub fn run(
+    &mut self,
+  ) -> (
+    Sender<(Option<InterfaceId>, IpPacket)>,
+    Receiver<(InterfaceId, IpPacket)>,
+  ) {
     let (send_tx, send_rx) = channel();
     let (recv_tx, recv_rx) = channel();
 
@@ -77,7 +80,7 @@ impl LinkLayer {
         addr_map_recv,
         interfaces_recv,
         closed_recv,
-        )
+      )
     });
 
     self.recv_handle = Some(recv);
@@ -94,12 +97,12 @@ impl LinkLayer {
           eprintln!("Got panic in recv thread {:?}", e);
           Ok(())
         })
-      .unwrap();
+        .unwrap();
     }
   }
 
   /// Sets the specified interface up
-  pub fn up(&self, interface_id: &usize) -> Result<()> {
+  pub fn up(&self, interface_id: &InterfaceId) -> Result<()> {
     let mut interfaces = self.interfaces.write().unwrap();
     if interface_id >= &interfaces.len() {
       Err(anyhow!("Unknown interface id"))
@@ -110,7 +113,7 @@ impl LinkLayer {
   }
 
   /// Sets the specified interface down
-  pub fn down(&self, interface_id: &usize) -> Result<()> {
+  pub fn down(&self, interface_id: &InterfaceId) -> Result<()> {
     let mut interfaces = self.interfaces.write().unwrap();
     if interface_id >= &interfaces.len() {
       Err(anyhow!("Unknown interface id"))
@@ -121,7 +124,7 @@ impl LinkLayer {
   }
 
   /// Returns the locked state of the specified interface
-  pub fn get_state(&self, interface_id: &usize) -> Result<State> {
+  pub fn get_state(&self, interface_id: &InterfaceId) -> Result<State> {
     let interfaces = self.get_interfaces();
     if interface_id >= &interfaces.len() {
       Err(anyhow!("Unknown interface id"))
@@ -131,7 +134,7 @@ impl LinkLayer {
   }
 
   /// Returns the locked state of the specified interface
-  pub fn get_our_ip(&self, interface_id: &usize) -> Result<Ipv4Addr> {
+  pub fn get_our_ip(&self, interface_id: &InterfaceId) -> Result<Ipv4Addr> {
     let interfaces = self.get_interfaces();
     if interface_id >= &interfaces.len() {
       Err(anyhow!("Unknown interface id"))
@@ -141,11 +144,11 @@ impl LinkLayer {
   }
 
   fn send_thread(
-    send_rx: Receiver<(Option<usize>, IpPacket)>,
+    send_rx: Receiver<(Option<InterfaceId>, IpPacket)>,
     local_link: UdpSocket,
-    addr_to_id: Arc<HashMap<SocketAddr, usize>>,
+    addr_to_id: Arc<HashMap<SocketAddr, InterfaceId>>,
     interfaces: Arc<RwLock<Vec<Interface>>>,
-    ) -> Result<()> {
+  ) -> Result<()> {
     loop {
       match send_rx.recv() {
         Ok((id_opt, packet)) => {
@@ -161,8 +164,10 @@ impl LinkLayer {
 
           match id_opt {
             Some(id) => send_packet_to_id(&interfaces[id])?,
-            None => for interface in interfaces.iter() {
-              send_packet_to_id(interface)?;
+            None => {
+              for interface in interfaces.iter() {
+                send_packet_to_id(interface)?;
+              }
             }
           }
         }
@@ -176,12 +181,12 @@ impl LinkLayer {
   }
 
   fn recv_thread(
-    read_tx: Sender<(usize, IpPacket)>,
+    read_tx: Sender<(InterfaceId, IpPacket)>,
     local_link: UdpSocket,
-    addr_to_id: Arc<HashMap<SocketAddr, usize>>,
+    addr_to_id: Arc<HashMap<SocketAddr, InterfaceId>>,
     interfaces: Arc<RwLock<Vec<Interface>>>,
     closed: Arc<AtomicBool>,
-    ) -> Result<()> {
+  ) -> Result<()> {
     local_link.set_read_timeout(Some(Duration::from_millis(100)))?;
     let mut buf = [0u8; MAX_SIZE];
     loop {
@@ -200,7 +205,7 @@ impl LinkLayer {
                 "Warning: Unknown source addr {}, local: {}, dropping...",
                 packet.source_address(),
                 src
-                );
+              );
             }
             Some(&id) => {
               let interfaces = interfaces.read().unwrap();

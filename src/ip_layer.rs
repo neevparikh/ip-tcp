@@ -1,56 +1,117 @@
 use std::collections::HashMap;
 use std::io::stdin;
 use std::net::Ipv4Addr;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use shellwords;
 
-// use super::debug;
-use super::ip_packet::IpPacket;
-use super::HandlerFunction;
-use super::link_layer::LinkLayer;
-use super::lnx_config::LnxConfig;
-use super::protocol::Protocol;
+use crate::forwarding_table::ForwardingTable;
+use crate::ip_packet::IpPacket;
+use crate::link_layer::LinkLayer;
+use crate::lnx_config::LnxConfig;
+use crate::protocol::Protocol;
+use crate::HandlerFunction;
 use crate::{debug, edebug};
 
 type HandlerMap = HashMap<Protocol, HandlerFunction>;
 
-pub struct Node {
+pub struct IpLayer {
   handlers: Arc<Mutex<HandlerMap>>,
   link_layer: LinkLayer,
+  closed: Arc<AtomicBool>,
+  send_handle: Option<thread::JoinHandle<()>>,
+  ip_send_tx: Sender<IpPacket>,
+  table: Arc<ForwardingTable>,
 }
 
-impl Node {
-  pub fn new(config: LnxConfig) -> Node {
-    Node {
+impl IpLayer {
+  pub fn new(config: LnxConfig) -> IpLayer {
+    let (ip_send_tx, ip_send_rx) = channel();
+    let mut node = IpLayer {
       handlers: Arc::new(Mutex::new(HashMap::new())),
       link_layer: LinkLayer::new(config),
+      closed: Arc::new(AtomicBool::new(false)),
+      send_handle: None,
+      table: Arc::new(ForwardingTable::default()),
+      ip_send_tx,
+    };
+
+    let (link_send_tx, link_recv_rx) = node.link_layer.run();
+
+    let handlers = node.handlers.clone();
+    thread::spawn(move || IpLayer::recv(link_recv_rx, handlers));
+
+    let closed = node.closed.clone();
+    let table = node.table.clone();
+    node.send_handle = Some(thread::spawn(move || {
+      IpLayer::send(ip_send_rx, link_send_tx, table, closed)
+    }));
+
+    node
+  }
+
+  fn close(&mut self) {
+    self.closed.store(true, Ordering::SeqCst);
+    if let Some(handle) = self.send_handle.take() {
+      handle.join().unwrap_or_else(|e| {
+        eprintln!("Got panic in send thread {:?}", e);
+        ()
+      })
     }
   }
 
-  fn listen(
-    recv_rx: Receiver<(usize, IpPacket)>,
-    send_tx: Sender<(Option<usize>, IpPacket)>,
-    handlers: Arc<Mutex<HandlerMap>>,
-    ) {
+  fn recv(link_recv_rx: Receiver<(usize, IpPacket)>, handlers: Arc<Mutex<HandlerMap>>) {
     loop {
-      match recv_rx.recv() {
-        Ok((interface, packet)) => match Node::handle_packet(&handlers, interface, &packet) {
-          Ok(responses) => {
-            for response in responses {
-              if let Err(_e) = send_tx.send(response) {
-                edebug!("Closing Node listen thread");
-                return;
-              }
-            }
-          }
-          Err(e) => eprintln!("Packet handler errored: {e}"),
+      match link_recv_rx.recv() {
+        Ok((interface, packet)) => match IpLayer::handle_packet(&handlers, interface, &packet) {
+          Ok(()) => (),
+          Err(e) => edebug!("Packet handler errored: {e}"),
         },
         Err(_) => {
-          edebug!("Closing Node listen thread");
+          edebug!("Connection closed, exiting node listen...");
+          return;
+        }
+      }
+    }
+  }
+
+  pub fn send(
+    ip_send_rx: Receiver<IpPacket>,
+    link_send_tx: Sender<(Option<usize>, IpPacket)>,
+    table: Arc<ForwardingTable>,
+    closed: Arc<AtomicBool>,
+  ) {
+    loop {
+      match ip_send_rx.recv_timeout(Duration::from_millis(100)) {
+        Ok(packet) => {
+          let id = match table.get_next_hop(packet.destination_address()) {
+            None => {
+              edebug!(
+                "{:?}: No next interface for next hop, dropping...",
+                packet.destination_address()
+              );
+              continue;
+            }
+            Some(id) => id,
+          };
+          match link_send_tx.send((Some(id), packet)) {
+            Ok(_) => (),
+            Err(_e) => edebug!("Connection dropped, exiting node send..."),
+          }
+        }
+        Err(RecvTimeoutError::Timeout) => {
+          if closed.load(Ordering::SeqCst) {
+            debug!("Connection closed, exiting node send...");
+            break;
+          }
+        }
+        Err(_) => {
+          edebug!("Closing node send...");
           return;
         }
       }
@@ -58,13 +119,6 @@ impl Node {
   }
 
   pub fn run(&mut self) -> Result<()> {
-    let (send_tx, recv_rx) = self.link_layer.run();
-    let send_tx_clone = send_tx.clone();
-    let handlers_clone = Arc::clone(&self.handlers);
-    thread::spawn(move || {
-      Node::listen(recv_rx, send_tx_clone, handlers_clone);
-    });
-
     loop {
       let mut buf = String::new();
       stdin().read_line(&mut buf)?;
@@ -101,7 +155,7 @@ impl Node {
               "Error: '{}' expected 3 arguments received {}",
               tokens[0],
               tokens.len() - 1
-              );
+            );
             continue;
           }
 
@@ -148,36 +202,36 @@ impl Node {
             identifier,
             true,
             &[],
-            );
+          );
 
           let packet = match packet {
             Ok(packet) => packet,
             Err(e) => {
-              eprintln!("Error: Failed to create ip packet, {e}");
+              edebug!("Error: Failed to create ip packet, {e}");
               continue;
             }
           };
 
-          if let Err(_) = send_tx.send((Some(outgoing_interface), packet)) {
-            eprintln!("LinkLayer closed unexpectedly");
+          if let Err(e) = self.ip_send_tx.send(packet) {
+            edebug!("ip send thread closed unexpectedly, {e}");
             break;
           }
         }
 
         "up" | "down" => {
           if tokens.len() != 2 {
-            println!(
+            eprintln!(
               "Error: '{}' expected 1 argument received {}",
               tokens[0],
               tokens.len() - 1
-              );
+            );
             continue;
           }
 
           let interface_id: usize = match tokens[1].parse() {
             Ok(num) => num,
             Err(_) => {
-              println!("Error: interface id must be positive int");
+              eprintln!("Error: interface id must be positive int");
               continue;
             }
           };
@@ -190,7 +244,7 @@ impl Node {
 
           match res {
             Ok(_) => (),
-            Err(e) => println!("Error: setting interface status failed: {e}"),
+            Err(e) => eprintln!("Error: setting interface status failed: {e}"),
           }
         }
 
@@ -200,9 +254,9 @@ impl Node {
               "Unrecognized command {}, expected one of ",
               "[interfaces | li, routes | lr, q, down INT, ",
               "up INT, send VIP PROTO STRING]"
-              ),
-              other
-              );
+            ),
+            other
+          );
         }
       }
     }
@@ -215,9 +269,9 @@ impl Node {
 
   fn handle_packet(
     handlers: &Arc<Mutex<HandlerMap>>,
-    interface: usize,
+    _interface: usize,
     packet: &IpPacket,
-    ) -> Result<Vec<(Option<usize>, IpPacket)>> {
+  ) -> Result<()> {
     let protocol = packet.protocol();
     debug!("Handling packet with protocol {protocol}");
     let handlers = handlers.lock().unwrap();
@@ -227,5 +281,11 @@ impl Node {
       None => Err(anyhow!("No handler registered for protocol {protocol}")),
       Some(handler) => Ok(handler(packet)),
     }
+  }
+}
+
+impl Drop for IpLayer {
+  fn drop(&mut self) {
+    self.close();
   }
 }

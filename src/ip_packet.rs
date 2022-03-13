@@ -1,8 +1,8 @@
-use super::protocol::Protocol;
-
 use std::net::Ipv4Addr;
 
 use anyhow::{anyhow, Result};
+
+use crate::protocol::Protocol;
 
 fn get_high_order_four_bits(byte: &u8) -> u8 {
   byte >> 4

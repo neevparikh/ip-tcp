@@ -2,6 +2,8 @@ use anyhow::{anyhow, Result};
 use std::fmt;
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 
+use crate::InterfaceId;
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum State {
   UP,
@@ -12,7 +14,7 @@ pub enum State {
 
 #[derive(Debug)]
 pub struct Interface {
-  pub id: usize,
+  pub id: InterfaceId,
   pub outgoing_link: String,
   pub outgoing_link_addr: SocketAddr,
   pub our_ip: Ipv4Addr,
@@ -22,11 +24,11 @@ pub struct Interface {
 
 impl Interface {
   pub fn new(
-    id: usize,
+    id: InterfaceId,
     outgoing_link: String,
     our_ip: Ipv4Addr,
     their_ip: Ipv4Addr,
-    ) -> Result<Interface> {
+  ) -> Result<Interface> {
     let outgoing_link_addr = match outgoing_link.to_socket_addrs()?.next() {
       Some(addr) => addr,
       None => return Err(anyhow!("Invalid socket_addr: {outgoing_link}")),
@@ -65,7 +67,11 @@ impl fmt::Display for Interface {
     write!(
       f,
       "{}: status {:?}, outgoing_link {}, their_ip {}, our_ip {}",
-      self.id, self.state(), self.outgoing_link, self.their_ip, self.our_ip
-      )
+      self.id,
+      self.state(),
+      self.outgoing_link,
+      self.their_ip,
+      self.our_ip
+    )
   }
 }

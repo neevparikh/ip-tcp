@@ -1,17 +1,16 @@
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 
 use ipnet::Ipv4Net;
 
-use super::ip_packet::IpPacket;
+use crate::ip_packet::IpPacket;
+use crate::{HandlerFunction, InterfaceId};
 
-use super::HandlerFunction;
-
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ForwardingTable {
-  pub table: Arc<Mutex<HashMap<Ipv4Net, (usize, u8)>>>,
+  pub table: Arc<Mutex<HashMap<Ipv4Net, (InterfaceId, u8)>>>,
 }
 
 impl ForwardingTable {
@@ -25,7 +24,7 @@ impl ForwardingTable {
   }
 
   /// Takes in a ip address and returns the interface to send the packet to
-  pub fn get_next_hop(&self, ip: Ipv4Addr) -> Option<usize> {
+  pub fn get_next_hop(&self, ip: Ipv4Addr) -> Option<InterfaceId> {
     let table = self.table.lock().unwrap();
 
     // TODO: there has to be a better way to do this:
@@ -44,6 +43,5 @@ impl ForwardingTable {
     }
   }
 
-  pub fn start_send_keep_alive_thread(send_tx: Sender<(Option<usize>, IpPacket)>) {
-  }
+  pub fn start_send_keep_alive_thread(send_tx: Sender<(Option<InterfaceId>, IpPacket)>) {}
 }
