@@ -36,7 +36,6 @@ impl LinkLayer {
 
     for (id, interface) in config.interfaces.iter().enumerate() {
       let their_socket_addr = interface.outgoing_link_addr.clone();
-      let their_ip = interface.their_ip.clone();
       interface_id_by_their_addr.insert(their_socket_addr, id);
     }
 
@@ -62,7 +61,6 @@ impl LinkLayer {
     let (recv_tx, recv_rx) = channel();
 
     let local_for_send = self.local_link.try_clone().unwrap();
-    let addr_map_send = self.addr_to_id.clone();
     let interfaces_send = self.interfaces.clone();
 
     let local_for_recv = self.local_link.try_clone().unwrap();
@@ -70,9 +68,8 @@ impl LinkLayer {
     let interfaces_recv = self.interfaces.clone();
     let closed_recv = self.closed.clone();
 
-    let _send = thread::spawn(move || {
-      LinkLayer::send_thread(send_rx, local_for_send, addr_map_send, interfaces_send)
-    });
+    let _send =
+      thread::spawn(move || LinkLayer::send_thread(send_rx, local_for_send, interfaces_send));
     let recv = thread::spawn(move || {
       LinkLayer::recv_thread(
         recv_tx,
@@ -146,7 +143,6 @@ impl LinkLayer {
   fn send_thread(
     send_rx: Receiver<(Option<InterfaceId>, IpPacket)>,
     local_link: UdpSocket,
-    addr_to_id: Arc<HashMap<SocketAddr, InterfaceId>>,
     interfaces: Arc<RwLock<Vec<Interface>>>,
   ) -> Result<()> {
     loop {
@@ -193,7 +189,7 @@ impl LinkLayer {
       match local_link.recv_from(&mut buf) {
         Ok((bytes_read, src)) => {
           let packet = match IpPacket::unpack(&buf[..bytes_read]) {
-            Err(e) => {
+            Err(_e) => {
               debug!("Warning: Malformed packet from {}, dropping...", src);
               continue;
             }

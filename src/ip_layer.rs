@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::stdin;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,24 +32,32 @@ pub struct IpLayer {
 impl IpLayer {
   pub fn new(config: LnxConfig) -> IpLayer {
     let (ip_send_tx, ip_send_rx) = channel();
+    let mut our_ip_addrs = HashSet::new();
+    let link_layer = LinkLayer::new(config);
+
+    for interface in link_layer.get_interfaces().iter() {
+      our_ip_addrs.insert(interface.our_ip);
+    }
+
     let mut node = IpLayer {
       handlers: Arc::new(Mutex::new(HashMap::new())),
-      link_layer: LinkLayer::new(config),
+      link_layer,
       closed: Arc::new(AtomicBool::new(false)),
       send_handle: None,
-      table: Arc::new(ForwardingTable::default()),
+      table: Arc::new(ForwardingTable::new()),
       ip_send_tx,
     };
 
     let (link_send_tx, link_recv_rx) = node.link_layer.run();
 
     let handlers = node.handlers.clone();
-    thread::spawn(move || IpLayer::recv(link_recv_rx, handlers));
+    let ip_send_tx = node.ip_send_tx.clone();
+    thread::spawn(move || IpLayer::recv_thread(link_recv_rx, handlers, our_ip_addrs, ip_send_tx));
 
     let closed = node.closed.clone();
     let table = node.table.clone();
     node.send_handle = Some(thread::spawn(move || {
-      IpLayer::send(ip_send_rx, link_send_tx, table, closed)
+      IpLayer::send_thread(ip_send_rx, link_send_tx, table, closed)
     }));
 
     node
@@ -65,13 +73,34 @@ impl IpLayer {
     }
   }
 
-  fn recv(link_recv_rx: Receiver<(usize, IpPacket)>, handlers: Arc<Mutex<HandlerMap>>) {
+  fn recv_thread(
+    link_recv_rx: Receiver<(usize, IpPacket)>,
+    handlers: Arc<Mutex<HandlerMap>>,
+    our_ip_addrs: HashSet<Ipv4Addr>,
+    ip_send_tx: Sender<IpPacket>,
+  ) {
     loop {
       match link_recv_rx.recv() {
-        Ok((interface, packet)) => match IpLayer::handle_packet(&handlers, interface, &packet) {
-          Ok(()) => (),
-          Err(e) => edebug!("Packet handler errored: {e}"),
-        },
+        Ok((interface, packet)) => {
+          if our_ip_addrs.contains(&packet.destination_address()) {
+            match IpLayer::handle_packet(&handlers, interface, &packet) {
+              Ok(()) => (),
+              Err(e) => edebug!("Packet handler errored: {e}"),
+            }
+          } else {
+            debug!(
+              "packet dst {:?}, forwarding...",
+              packet.destination_address()
+            );
+            match ip_send_tx.send(packet) {
+              Ok(()) => (),
+              Err(_e) => {
+                edebug!("Connection closed, exiting node listen...");
+                return;
+              }
+            }
+          }
+        }
         Err(_) => {
           edebug!("Connection closed, exiting node listen...");
           return;
@@ -80,7 +109,7 @@ impl IpLayer {
     }
   }
 
-  pub fn send(
+  fn send_thread(
     ip_send_rx: Receiver<IpPacket>,
     link_send_tx: Sender<(Option<usize>, IpPacket)>,
     table: Arc<ForwardingTable>,
@@ -131,7 +160,9 @@ impl IpLayer {
           continue;
         }
       };
-      debug_assert!(tokens.len() > 0);
+      if tokens.len() == 0 {
+        continue;
+      }
 
       match &*tokens[0] {
         "interfaces" | "li" => {
