@@ -10,3 +10,7 @@ pub mod utils;
 use ip_packet::IpPacket;
 pub type HandlerFunction = Box<dyn Fn(&IpPacket) + Send>;
 pub type InterfaceId = usize;
+
+pub use ip_layer::IpSendMsg;
+pub use link_layer::LinkRecvMsg;
+pub use link_layer::LinkSendMsg;

@@ -19,13 +19,14 @@ use crate::HandlerFunction;
 use crate::{debug, edebug};
 
 type HandlerMap = HashMap<Protocol, HandlerFunction>;
+pub type IpSendMsg = (bool, IpPacket);
 
 pub struct IpLayer {
   handlers: Arc<Mutex<HandlerMap>>,
   link_layer: LinkLayer,
   closed: Arc<AtomicBool>,
   send_handle: Option<thread::JoinHandle<()>>,
-  ip_send_tx: Sender<IpPacket>,
+  ip_send_tx: Sender<IpSendMsg>,
   table: Arc<ForwardingTable>,
 }
 
@@ -77,7 +78,7 @@ impl IpLayer {
     link_recv_rx: Receiver<(usize, IpPacket)>,
     handlers: Arc<Mutex<HandlerMap>>,
     our_ip_addrs: HashSet<Ipv4Addr>,
-    ip_send_tx: Sender<IpPacket>,
+    ip_send_tx: Sender<IpSendMsg>,
   ) {
     loop {
       match link_recv_rx.recv() {
@@ -92,7 +93,7 @@ impl IpLayer {
               "packet dst {:?}, forwarding...",
               packet.destination_address()
             );
-            match ip_send_tx.send(packet) {
+            match ip_send_tx.send((false, packet)) {
               Ok(()) => (),
               Err(_e) => {
                 edebug!("Connection closed, exiting node listen...");
@@ -110,27 +111,31 @@ impl IpLayer {
   }
 
   fn send_thread(
-    ip_send_rx: Receiver<IpPacket>,
+    ip_send_rx: Receiver<IpSendMsg>,
     link_send_tx: Sender<(Option<usize>, IpPacket)>,
     table: Arc<ForwardingTable>,
     closed: Arc<AtomicBool>,
   ) {
     loop {
       match ip_send_rx.recv_timeout(Duration::from_millis(100)) {
-        Ok(packet) => {
-          let id = match table.get_next_hop(packet.destination_address()) {
-            None => {
-              edebug!(
-                "{:?}: No next interface for next hop, dropping...",
-                packet.destination_address()
-              );
-              continue;
+        Ok((broadcast, packet)) => {
+          if !broadcast {
+            let id = match table.get_next_hop(packet.destination_address()) {
+              None => {
+                edebug!(
+                  "{:?}: No next interface for next hop, dropping...",
+                  packet.destination_address()
+                );
+                continue;
+              }
+              Some(id) => id,
+            };
+            match link_send_tx.send((Some(id), packet)) {
+              Ok(_) => (),
+              Err(_e) => edebug!("Connection dropped, exiting node send..."),
             }
-            Some(id) => id,
-          };
-          match link_send_tx.send((Some(id), packet)) {
-            Ok(_) => (),
-            Err(_e) => edebug!("Connection dropped, exiting node send..."),
+          } else {
+            todo!();
           }
         }
         Err(RecvTimeoutError::Timeout) => {
@@ -243,7 +248,7 @@ impl IpLayer {
             }
           };
 
-          if let Err(e) = self.ip_send_tx.send(packet) {
+          if let Err(e) = self.ip_send_tx.send((false, packet)) {
             edebug!("ip send thread closed unexpectedly, {e}");
             break;
           }

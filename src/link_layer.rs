@@ -16,6 +16,9 @@ use crate::{debug, InterfaceId};
 
 const MAX_SIZE: usize = 65536;
 
+pub type LinkSendMsg = (Option<InterfaceId>, IpPacket);
+pub type LinkRecvMsg = (InterfaceId, IpPacket);
+
 pub struct LinkLayer {
   interfaces: Arc<RwLock<Vec<Interface>>>,
   addr_to_id: Arc<HashMap<SocketAddr, InterfaceId>>,
@@ -51,14 +54,9 @@ impl LinkLayer {
   /// Launches recv and send threads, returns channels which can be used to send and receive
   /// Note that if the interface_id is None in the send, the message will be broadcast on all
   /// interfaces which are currently set to up
-  pub fn run(
-    &mut self,
-  ) -> (
-    Sender<(Option<InterfaceId>, IpPacket)>,
-    Receiver<(InterfaceId, IpPacket)>,
-  ) {
-    let (send_tx, send_rx) = channel();
-    let (recv_tx, recv_rx) = channel();
+  pub fn run(&mut self) -> (Sender<LinkSendMsg>, Receiver<LinkRecvMsg>) {
+    let (link_send_tx, link_send_rx) = channel();
+    let (link_recv_tx, link_recv_rx) = channel();
 
     let local_for_send = self.local_link.try_clone().unwrap();
     let interfaces_send = self.interfaces.clone();
@@ -69,10 +67,10 @@ impl LinkLayer {
     let closed_recv = self.closed.clone();
 
     let _send =
-      thread::spawn(move || LinkLayer::send_thread(send_rx, local_for_send, interfaces_send));
+      thread::spawn(move || LinkLayer::send_thread(link_send_rx, local_for_send, interfaces_send));
     let recv = thread::spawn(move || {
       LinkLayer::recv_thread(
-        recv_tx,
+        link_recv_tx,
         local_for_recv,
         addr_map_recv,
         interfaces_recv,
@@ -81,7 +79,7 @@ impl LinkLayer {
     });
 
     self.recv_handle = Some(recv);
-    (send_tx, recv_rx)
+    (link_send_tx, link_recv_rx)
   }
 
   /// Closes the recv/send threads
@@ -141,12 +139,12 @@ impl LinkLayer {
   }
 
   fn send_thread(
-    send_rx: Receiver<(Option<InterfaceId>, IpPacket)>,
+    link_send_rx: Receiver<LinkSendMsg>,
     local_link: UdpSocket,
     interfaces: Arc<RwLock<Vec<Interface>>>,
   ) -> Result<()> {
     loop {
-      match send_rx.recv() {
+      match link_send_rx.recv() {
         Ok((id_opt, packet)) => {
           let interfaces = interfaces.read().unwrap();
           let send_packet_to_id = |interface: &Interface| -> Result<()> {
@@ -177,7 +175,7 @@ impl LinkLayer {
   }
 
   fn recv_thread(
-    read_tx: Sender<(InterfaceId, IpPacket)>,
+    link_recv_tx: Sender<LinkRecvMsg>,
     local_link: UdpSocket,
     addr_to_id: Arc<HashMap<SocketAddr, InterfaceId>>,
     interfaces: Arc<RwLock<Vec<Interface>>>,
@@ -209,7 +207,7 @@ impl LinkLayer {
               let state = interface.state().clone();
               drop(interfaces);
               if state == State::UP {
-                match read_tx.send((id, packet)) {
+                match link_recv_tx.send((id, packet)) {
                   Ok(_) => (),
                   Err(_e) => {
                     debug!("Connection dropped, exiting...");

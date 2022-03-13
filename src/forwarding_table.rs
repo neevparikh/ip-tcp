@@ -4,8 +4,7 @@ use std::str::FromStr;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-use crate::ip_packet::IpPacket;
-use crate::{HandlerFunction, InterfaceId};
+use crate::{HandlerFunction, InterfaceId, IpSendMsg};
 
 #[derive(Debug, Default)]
 pub struct ForwardingTable {
@@ -41,5 +40,5 @@ impl ForwardingTable {
     }
   }
 
-  pub fn start_send_keep_alive_thread(send_tx: Sender<(Option<InterfaceId>, IpPacket)>) {}
+  pub fn start_send_keep_alive_thread(ip_send_tx: Sender<IpSendMsg>) {}
 }
