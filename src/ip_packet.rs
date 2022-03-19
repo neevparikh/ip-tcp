@@ -2,131 +2,7 @@ use std::net::Ipv4Addr;
 
 use anyhow::{anyhow, Result};
 
-use crate::protocol::Protocol;
-
-fn get_high_order_four_bits(byte: &u8) -> u8 {
-  byte >> 4
-}
-
-fn get_low_order_four_bits(byte: &u8) -> u8 {
-  byte & 0b0000_1111
-}
-
-fn set_high_order_four_bits(byte: &mut u8, high_bits: &u8) {
-  debug_assert!(*high_bits < (1 << 4));
-  *byte &= 0b0000_1111;
-  *byte |= high_bits << 4;
-}
-
-fn set_low_order_four_bits(byte: &mut u8, low_bits: &u8) {
-  debug_assert!(*low_bits < (1 << 4));
-  *byte &= 0b1111_0000;
-  *byte |= low_bits;
-}
-
-fn get_high_order_byte(num: &u16) -> u8 {
-  (num >> 8) as u8
-}
-
-fn get_low_order_byte(num: &u16) -> u8 {
-  (num & 0xffu16) as u8
-}
-
-fn convert_to_u16(higher_order: &u8, lower_order: &u8) -> u16 {
-  (u16::from(*higher_order) << 8) + u16::from(*lower_order)
-}
-
-#[derive(Debug, PartialEq)]
-pub struct FragmentOffset {
-  /// This is the second bit in the flags section of the IP header
-  pub dont_fragment: bool,
-  /// This is the third bit in the flags section of the IP header
-  pub more_fragments: bool,
-
-  /// really a u13
-  fragment_offset: u16,
-}
-
-impl FragmentOffset {
-  const MAX_FRAGMENT_OFFSET: u16 = (1 << 13) - 1;
-
-  /// Creates a new FragmentOffset object and bound checks fragment_offset
-  pub fn new(
-    dont_fragment: bool,
-    more_fragments: bool,
-    fragment_offset: u16,
-  ) -> Result<FragmentOffset> {
-    if fragment_offset > FragmentOffset::MAX_FRAGMENT_OFFSET {
-      return Err(anyhow!(
-        "fragment_offset has max value of {}, value was {}",
-        FragmentOffset::MAX_FRAGMENT_OFFSET,
-        fragment_offset,
-      ));
-    }
-
-    Ok(FragmentOffset {
-      dont_fragment,
-      more_fragments,
-      fragment_offset,
-    })
-  }
-
-  /// Takes in the bytes from a ip packet and forms a fragment offset
-  pub fn unpack(high_order_byte: &u8, low_order_byte: &u8) -> Result<FragmentOffset> {
-    if *high_order_byte & 0b1000_0000u8 != 0 {
-      return Err(anyhow!(
-        "First bit of fragment flags is reserved and must be 0"
-      ));
-    }
-    let dont_fragment = bool::from(*high_order_byte & 0b0100_0000u8 != 0);
-    let more_fragments = bool::from(*high_order_byte & 0b0010_0000u8 != 0);
-    let high_order_offset_byte = *high_order_byte & 0b0001_1111u8;
-    let fragment_offset = convert_to_u16(&high_order_offset_byte, low_order_byte);
-
-    Ok(FragmentOffset {
-      dont_fragment,
-      more_fragments,
-      fragment_offset,
-    })
-  }
-
-  /// Returns (high_order_byte, low_order_byte)
-  pub fn to_bytes(&self) -> (u8, u8) {
-    let mut high_order_byte = 0b0000_0000u8;
-    if self.dont_fragment {
-      high_order_byte |= 0b0100_0000;
-    }
-
-    if self.more_fragments {
-      high_order_byte |= 0b0010_0000;
-    }
-
-    debug_assert!(self.fragment_offset <= FragmentOffset::MAX_FRAGMENT_OFFSET);
-    // use += instead of |= to avoid explicit conversion
-    high_order_byte += get_high_order_byte(&self.fragment_offset);
-    let low_order_byte = get_low_order_byte(&self.fragment_offset);
-
-    (high_order_byte, low_order_byte)
-  }
-
-  /// Sets fragment offset value with bounds checking
-  fn set_fragment_offset(&mut self, fragment_offset: u16) -> Result<()> {
-    if fragment_offset > FragmentOffset::MAX_FRAGMENT_OFFSET {
-      return Err(anyhow!(
-        "fragment_offset has max value of {}, value was {}",
-        FragmentOffset::MAX_FRAGMENT_OFFSET,
-        fragment_offset,
-      ));
-    }
-
-    self.fragment_offset = fragment_offset;
-    Ok(())
-  }
-
-  fn get_fragment_offset(&self) -> u16 {
-    self.fragment_offset
-  }
-}
+use crate::{edebug, protocol::Protocol};
 
 #[derive(Debug)]
 pub struct IpPacket {
@@ -136,13 +12,25 @@ pub struct IpPacket {
   option_data: Vec<u8>,
   /// Actual data associated with packet
   data: Vec<u8>,
+  /// Source address set
+  source_set: bool,
 }
 
 impl IpPacket {
   /// Note that most getters and setters do not bounds check, so at a minimum
   /// new must make header the correct length
+  ///
+  /// Note that source address isn't set in the constructor, as the IP layer sets the source when
+  /// sending
+  pub fn new_with_defaults(
+    destination: Ipv4Addr,
+    protocol: Protocol,
+    data: &[u8],
+  ) -> Result<IpPacket> {
+    IpPacket::new(destination, protocol, 0u8, 255u8, data, 0u16, true, &[])
+  }
+
   pub fn new(
-    source: Ipv4Addr,
     destination: Ipv4Addr,
     protocol: Protocol,
     type_of_service: u8,
@@ -156,6 +44,7 @@ impl IpPacket {
       header: [0u8; 20],
       option_data: option_data.to_vec(),
       data: data.to_vec(),
+      source_set: false,
     };
 
     packet.set_version(4)?;
@@ -171,11 +60,11 @@ impl IpPacket {
     packet.set_total_length(20u16 + u16::from(option_len) + data_len);
     packet.set_identification(identifier);
     // Set flags so that our packets don't fragment
-    packet.set_fragment_offset(FragmentOffset::new(true, false, 0)?);
+    packet.set_fragment_offset(FragmentOffset::new(dont_fragment, false, 0)?);
     packet.set_time_to_live(time_to_live);
     packet.set_protocol(protocol);
-    packet.set_source_address(source);
     packet.set_destination_address(destination);
+    packet.set_type_of_service(type_of_service);
 
     // TODO: this is necessary which doesn't make any sense
     packet.calculate_and_set_checksum();
@@ -185,7 +74,7 @@ impl IpPacket {
 
   /// Unpacks a byte stream into an IpPacket, returns an error if the packet is
   /// malformed.
-  pub fn unpack(bytes: &[u8]) -> Result<IpPacket> {
+  pub(crate) fn unpack(bytes: &[u8]) -> Result<IpPacket> {
     let bytes_len = bytes.len();
     if bytes_len < 20 {
       return Err(anyhow!(
@@ -197,6 +86,7 @@ impl IpPacket {
       header: [0u8; 20],
       option_data: Vec::new(),
       data: Vec::new(),
+      source_set: true,
     };
 
     packet.header.copy_from_slice(&bytes[0..20]);
@@ -237,8 +127,13 @@ impl IpPacket {
   }
 
   /// Turn packet in bytes to be sent over network
-  /// TODO: should this consume the packet
-  pub fn pack(&self) -> Vec<u8> {
+  pub(crate) fn pack(&self) -> Vec<u8> {
+    if !self.source_set {
+      panic!(
+        "{:#?} doesn't have source set. This is an implementation bug.",
+        self
+      );
+    }
     let mut res = self.header.to_vec();
     debug_assert!(self.option_data.len() % 4 == 0);
     res.extend(&self.option_data);
@@ -246,7 +141,7 @@ impl IpPacket {
     return res;
   }
 
-  pub fn get_data(&self) -> &[u8] {
+  pub fn data(&self) -> &[u8] {
     &self.data
   }
 
@@ -289,6 +184,9 @@ impl IpPacket {
   }
 
   pub fn source_address(&self) -> Ipv4Addr {
+    if !self.source_set {
+      edebug!("warning: {:#?} has no source set", self);
+    }
     Ipv4Addr::new(
       self.header[12],
       self.header[13],
@@ -343,15 +241,14 @@ impl IpPacket {
 
   /// Warning, checksum should always be set by other setters or in the
   /// initialize_checksum function
-  fn set_header_checksum(&mut self, checksum: u16) {
+  pub(crate) fn set_header_checksum(&mut self, checksum: u16) {
     self.header[10] = get_high_order_byte(&checksum);
     self.header[11] = get_low_order_byte(&checksum);
   }
 
   /// Sets ip version number
-  /// TODO: should this check that the version is a supported ip version number
   /// i.e. 4
-  fn set_version(&mut self, version: u8) -> Result<()> {
+  pub(crate) fn set_version(&mut self, version: u8) -> Result<()> {
     if version >= 1 << 4 {
       return Err(anyhow!("Version only gets 4 bits but was set to {version}"));
     }
@@ -362,8 +259,7 @@ impl IpPacket {
     Ok(())
   }
 
-  /// TODO: should this validate that this is the true header length
-  fn set_internet_header_length(&mut self, ihl: u8) -> Result<()> {
+  pub(crate) fn set_internet_header_length(&mut self, ihl: u8) -> Result<()> {
     if ihl >= 1 << 4 {
       return Err(anyhow!("IHL only gets 4 bits but was set to {ihl}"));
     }
@@ -375,13 +271,16 @@ impl IpPacket {
   }
 
   /// Sets the first byte of ip packet
-  /// TODO: should this check that the version is a supported ip version number
   /// i.e. 4
-  fn set_version_and_ihl(&mut self, byte: u8) {
+  pub(crate) fn _set_version_and_ihl(&mut self, byte: u8) {
     self.header[0] = byte;
   }
 
-  fn set_total_length(&mut self, total_length: u16) {
+  pub(crate) fn set_type_of_service(&mut self, type_of_service: u8) {
+    self.header[1] = type_of_service;
+  }
+
+  pub(crate) fn set_total_length(&mut self, total_length: u16) {
     self.header[2] = get_high_order_byte(&total_length);
     self.header[3] = get_low_order_byte(&total_length);
 
@@ -389,7 +288,7 @@ impl IpPacket {
     self.calculate_and_set_checksum();
   }
 
-  fn set_identification(&mut self, identification: u16) {
+  pub(crate) fn set_identification(&mut self, identification: u16) {
     self.header[4] = get_high_order_byte(&identification);
     self.header[5] = get_low_order_byte(&identification);
 
@@ -397,28 +296,29 @@ impl IpPacket {
     self.calculate_and_set_checksum();
   }
 
-  fn set_fragment_offset(&mut self, fragment_offset: FragmentOffset) {
+  pub(crate) fn set_fragment_offset(&mut self, fragment_offset: FragmentOffset) {
     (self.header[6], self.header[7]) = fragment_offset.to_bytes();
 
     // TODO: should be able to do a partial update and not recalculate whole thing
     self.calculate_and_set_checksum();
   }
 
-  fn set_time_to_live(&mut self, time_to_live: u8) {
+  pub(crate) fn set_time_to_live(&mut self, time_to_live: u8) {
     self.header[8] = time_to_live;
 
     // TODO: should be able to do a partial update and not recalculate whole thing
     self.calculate_and_set_checksum();
   }
 
-  fn set_protocol(&mut self, protocol: Protocol) {
+  pub(crate) fn set_protocol(&mut self, protocol: Protocol) {
     self.header[9] = protocol.into();
 
     // TODO: should be able to do a partial update and not recalculate whole thing
     self.calculate_and_set_checksum();
   }
 
-  fn set_source_address(&mut self, source_address: Ipv4Addr) {
+  pub(crate) fn set_source_address(&mut self, source_address: Ipv4Addr) {
+    self.source_set = true;
     let addr_bytes = source_address.octets();
     self.header[12] = addr_bytes[0];
     self.header[13] = addr_bytes[1];
@@ -429,7 +329,7 @@ impl IpPacket {
     self.calculate_and_set_checksum();
   }
 
-  fn set_destination_address(&mut self, destination_address: Ipv4Addr) {
+  pub(crate) fn set_destination_address(&mut self, destination_address: Ipv4Addr) {
     let addr_bytes = destination_address.octets();
     self.header[16] = addr_bytes[0];
     self.header[17] = addr_bytes[1];
@@ -450,6 +350,130 @@ impl IpPacket {
     // TODO: validate the actual fields
     Ok(())
   }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct FragmentOffset {
+  /// This is the second bit in the flags section of the IP header
+  pub(crate) dont_fragment: bool,
+  /// This is the third bit in the flags section of the IP header
+  pub(crate) more_fragments: bool,
+
+  /// really a u13
+  fragment_offset: u16,
+}
+
+impl FragmentOffset {
+  const MAX_FRAGMENT_OFFSET: u16 = (1 << 13) - 1;
+
+  /// Creates a new FragmentOffset object and bound checks fragment_offset
+  pub(crate) fn new(
+    dont_fragment: bool,
+    more_fragments: bool,
+    fragment_offset: u16,
+  ) -> Result<FragmentOffset> {
+    if fragment_offset > FragmentOffset::MAX_FRAGMENT_OFFSET {
+      return Err(anyhow!(
+        "fragment_offset has max value of {}, value was {}",
+        FragmentOffset::MAX_FRAGMENT_OFFSET,
+        fragment_offset,
+      ));
+    }
+
+    Ok(FragmentOffset {
+      dont_fragment,
+      more_fragments,
+      fragment_offset,
+    })
+  }
+
+  /// Takes in the bytes from a ip packet and forms a fragment offset
+  pub(crate) fn unpack(high_order_byte: &u8, low_order_byte: &u8) -> Result<FragmentOffset> {
+    if *high_order_byte & 0b1000_0000u8 != 0 {
+      return Err(anyhow!(
+        "First bit of fragment flags is reserved and must be 0"
+      ));
+    }
+    let dont_fragment = bool::from(*high_order_byte & 0b0100_0000u8 != 0);
+    let more_fragments = bool::from(*high_order_byte & 0b0010_0000u8 != 0);
+    let high_order_offset_byte = *high_order_byte & 0b0001_1111u8;
+    let fragment_offset = convert_to_u16(&high_order_offset_byte, low_order_byte);
+
+    Ok(FragmentOffset {
+      dont_fragment,
+      more_fragments,
+      fragment_offset,
+    })
+  }
+
+  /// Returns (high_order_byte, low_order_byte)
+  pub(crate) fn to_bytes(&self) -> (u8, u8) {
+    let mut high_order_byte = 0b0000_0000u8;
+    if self.dont_fragment {
+      high_order_byte |= 0b0100_0000;
+    }
+
+    if self.more_fragments {
+      high_order_byte |= 0b0010_0000;
+    }
+
+    debug_assert!(self.fragment_offset <= FragmentOffset::MAX_FRAGMENT_OFFSET);
+    // use += instead of |= to avoid explicit conversion
+    high_order_byte += get_high_order_byte(&self.fragment_offset);
+    let low_order_byte = get_low_order_byte(&self.fragment_offset);
+
+    (high_order_byte, low_order_byte)
+  }
+
+  /// Sets fragment offset value with bounds checking
+  fn _set_fragment_offset(&mut self, fragment_offset: u16) -> Result<()> {
+    if fragment_offset > FragmentOffset::MAX_FRAGMENT_OFFSET {
+      return Err(anyhow!(
+        "fragment_offset has max value of {}, value was {}",
+        FragmentOffset::MAX_FRAGMENT_OFFSET,
+        fragment_offset,
+      ));
+    }
+
+    self.fragment_offset = fragment_offset;
+    Ok(())
+  }
+
+  fn _fragment_offset(&self) -> u16 {
+    self.fragment_offset
+  }
+}
+
+fn get_high_order_four_bits(byte: &u8) -> u8 {
+  byte >> 4
+}
+
+fn get_low_order_four_bits(byte: &u8) -> u8 {
+  byte & 0b0000_1111
+}
+
+fn set_high_order_four_bits(byte: &mut u8, high_bits: &u8) {
+  debug_assert!(*high_bits < (1 << 4));
+  *byte &= 0b0000_1111;
+  *byte |= high_bits << 4;
+}
+
+fn set_low_order_four_bits(byte: &mut u8, low_bits: &u8) {
+  debug_assert!(*low_bits < (1 << 4));
+  *byte &= 0b1111_0000;
+  *byte |= low_bits;
+}
+
+fn get_high_order_byte(num: &u16) -> u8 {
+  (num >> 8) as u8
+}
+
+fn get_low_order_byte(num: &u16) -> u8 {
+  (num & 0xffu16) as u8
+}
+
+fn convert_to_u16(higher_order: &u8, lower_order: &u8) -> u16 {
+  (u16::from(*higher_order) << 8) + u16::from(*lower_order)
 }
 
 #[cfg(test)]

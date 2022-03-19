@@ -97,44 +97,44 @@ impl LinkLayer {
   }
 
   /// Sets the specified interface up
-  pub fn up(&self, interface_id: &InterfaceId) -> Result<()> {
+  pub fn up(&self, interface_id: InterfaceId) -> Result<()> {
     let mut interfaces = self.interfaces.write().unwrap();
-    if interface_id >= &interfaces.len() {
+    if interface_id >= interfaces.len() {
       Err(anyhow!("Unknown interface id"))
     } else {
-      interfaces[*interface_id].up();
+      interfaces[interface_id].up();
       Ok(())
     }
   }
 
   /// Sets the specified interface down
-  pub fn down(&self, interface_id: &InterfaceId) -> Result<()> {
+  pub fn down(&self, interface_id: InterfaceId) -> Result<()> {
     let mut interfaces = self.interfaces.write().unwrap();
-    if interface_id >= &interfaces.len() {
+    if interface_id >= interfaces.len() {
       Err(anyhow!("Unknown interface id"))
     } else {
-      interfaces[*interface_id].down();
+      interfaces[interface_id].down();
       Ok(())
     }
   }
 
   /// Returns the locked state of the specified interface
-  pub fn get_state(&self, interface_id: &InterfaceId) -> Result<State> {
+  pub fn get_state(&self, interface_id: InterfaceId) -> Result<State> {
     let interfaces = self.get_interfaces();
-    if interface_id >= &interfaces.len() {
+    if interface_id >= interfaces.len() {
       Err(anyhow!("Unknown interface id"))
     } else {
-      Ok(interfaces[*interface_id].state())
+      Ok(interfaces[interface_id].state())
     }
   }
 
   /// Returns the locked state of the specified interface
-  pub fn get_our_ip(&self, interface_id: &InterfaceId) -> Result<Ipv4Addr> {
+  pub fn get_our_ip(&self, interface_id: InterfaceId) -> Result<Ipv4Addr> {
     let interfaces = self.get_interfaces();
-    if interface_id >= &interfaces.len() {
+    if interface_id >= interfaces.len() {
       Err(anyhow!("Unknown interface id"))
     } else {
-      Ok(interfaces[*interface_id].our_ip)
+      Ok(interfaces[interface_id].our_ip)
     }
   }
 

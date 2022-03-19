@@ -5,6 +5,7 @@ pub mod ip_packet;
 pub mod link_layer;
 pub mod lnx_config;
 pub mod protocol;
+pub mod rip_message;
 pub mod utils;
 
 use ip_packet::IpPacket;

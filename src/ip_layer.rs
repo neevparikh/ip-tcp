@@ -3,7 +3,7 @@ use std::io::stdin;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
@@ -19,11 +19,11 @@ use crate::HandlerFunction;
 use crate::{debug, edebug};
 
 type HandlerMap = HashMap<Protocol, HandlerFunction>;
-pub type IpSendMsg = (bool, IpPacket);
+pub type IpSendMsg = IpPacket;
 
 pub struct IpLayer {
   handlers: Arc<Mutex<HandlerMap>>,
-  link_layer: LinkLayer,
+  link_layer: Arc<RwLock<LinkLayer>>,
   closed: Arc<AtomicBool>,
   send_handle: Option<thread::JoinHandle<()>>,
   ip_send_tx: Sender<IpSendMsg>,
@@ -34,9 +34,9 @@ impl IpLayer {
   pub fn new(config: LnxConfig) -> IpLayer {
     let (ip_send_tx, ip_send_rx) = channel();
     let mut our_ip_addrs = HashSet::new();
-    let link_layer = LinkLayer::new(config);
+    let link_layer = Arc::new(RwLock::new(LinkLayer::new(config)));
 
-    for interface in link_layer.get_interfaces().iter() {
+    for interface in link_layer.read().unwrap().get_interfaces().iter() {
       our_ip_addrs.insert(interface.our_ip);
     }
 
@@ -49,7 +49,7 @@ impl IpLayer {
       ip_send_tx,
     };
 
-    let (link_send_tx, link_recv_rx) = node.link_layer.run();
+    let (link_send_tx, link_recv_rx) = node.link_layer.write().unwrap().run();
 
     let handlers = node.handlers.clone();
     let ip_send_tx = node.ip_send_tx.clone();
@@ -57,8 +57,9 @@ impl IpLayer {
 
     let closed = node.closed.clone();
     let table = node.table.clone();
+    let link_layer = node.link_layer.clone();
     node.send_handle = Some(thread::spawn(move || {
-      IpLayer::send_thread(ip_send_rx, link_send_tx, table, closed)
+      IpLayer::send_thread(ip_send_rx, link_send_tx, table, closed, link_layer)
     }));
 
     node
@@ -88,17 +89,19 @@ impl IpLayer {
               Ok(()) => (),
               Err(e) => edebug!("Packet handler errored: {e}"),
             }
+          } else if packet.time_to_live() == 0 {
+            debug!(
+              "packet dst {:?} expired, dropping...",
+              packet.destination_address()
+            );
           } else {
             debug!(
               "packet dst {:?}, forwarding...",
               packet.destination_address()
             );
-            match ip_send_tx.send((false, packet)) {
-              Ok(()) => (),
-              Err(_e) => {
-                edebug!("Connection closed, exiting node listen...");
-                return;
-              }
+            if let Err(_e) = ip_send_tx.send(packet) {
+              edebug!("Connection closed, exiting node listen...");
+              return;
             }
           }
         }
@@ -115,27 +118,25 @@ impl IpLayer {
     link_send_tx: Sender<(Option<usize>, IpPacket)>,
     table: Arc<ForwardingTable>,
     closed: Arc<AtomicBool>,
+    link_layer: Arc<RwLock<LinkLayer>>,
   ) {
     loop {
       match ip_send_rx.recv_timeout(Duration::from_millis(100)) {
-        Ok((broadcast, packet)) => {
-          if !broadcast {
-            let id = match table.get_next_hop(packet.destination_address()) {
-              None => {
-                edebug!(
-                  "{:?}: No next interface for next hop, dropping...",
-                  packet.destination_address()
-                );
-                continue;
-              }
-              Some(id) => id,
-            };
-            match link_send_tx.send((Some(id), packet)) {
-              Ok(_) => (),
-              Err(_e) => edebug!("Connection dropped, exiting node send..."),
+        Ok(mut packet) => {
+          let id = match table.get_next_hop(packet.destination_address()) {
+            None => {
+              edebug!(
+                "{:?}: No next interface for next hop, dropping...",
+                packet.destination_address()
+              );
+              continue;
             }
-          } else {
-            todo!();
+            Some(id) => id,
+          };
+          packet.set_source_address(link_layer.read().unwrap().get_our_ip(id).unwrap());
+          if let Err(_e) = link_send_tx.send((Some(id), packet)) {
+            edebug!("Connection dropped, exiting node send...");
+            break;
           }
         }
         Err(RecvTimeoutError::Timeout) => {
@@ -146,12 +147,13 @@ impl IpLayer {
         }
         Err(_) => {
           edebug!("Closing node send...");
-          return;
+          break;
         }
       }
     }
   }
 
+  // TODO: break this down into functions
   pub fn run(&mut self) -> Result<()> {
     loop {
       let mut buf = String::new();
@@ -171,20 +173,19 @@ impl IpLayer {
 
       match &*tokens[0] {
         "interfaces" | "li" => {
-          let interfaces = self.link_layer.get_interfaces();
+          let layer_read = self.link_layer.read().unwrap();
+          let interfaces = layer_read.get_interfaces();
           for interface in interfaces.iter() {
             println!("{}", interface);
           }
+          drop(interfaces);
         }
-
         "routes" | "lr" => {
           todo!();
         }
-
         "q" => {
           break;
         }
-
         "send" => {
           if tokens.len() != 4 {
             println!(
@@ -219,28 +220,7 @@ impl IpLayer {
 
           let data: Vec<u8> = tokens[3].as_bytes().to_vec();
 
-          // TODO: get interface number from forwarding, routing table
-          // TODO: check status of interface
-          let outgoing_interface = 0usize;
-          let source_address = self.link_layer.get_our_ip(&outgoing_interface).unwrap();
-
-          // TODO: figure out values for these fields
-          let type_of_service = 0u8;
-          let time_to_live = 2u8;
-          let identifier = 2u16;
-          let packet = IpPacket::new(
-            source_address,
-            their_ip,
-            protocol,
-            type_of_service,
-            time_to_live,
-            &data,
-            identifier,
-            true,
-            &[],
-          );
-
-          let packet = match packet {
+          let packet = match IpPacket::new_with_defaults(their_ip, protocol, &data) {
             Ok(packet) => packet,
             Err(e) => {
               edebug!("Error: Failed to create ip packet, {e}");
@@ -248,12 +228,11 @@ impl IpLayer {
             }
           };
 
-          if let Err(e) = self.ip_send_tx.send((false, packet)) {
+          if let Err(e) = self.ip_send_tx.send(packet) {
             edebug!("ip send thread closed unexpectedly, {e}");
             break;
           }
         }
-
         "up" | "down" => {
           if tokens.len() != 2 {
             eprintln!(
@@ -273,9 +252,9 @@ impl IpLayer {
           };
 
           let res = if tokens[0] == "up" {
-            self.link_layer.up(&interface_id)
+            self.link_layer.read().unwrap().up(interface_id)
           } else {
-            self.link_layer.down(&interface_id)
+            self.link_layer.read().unwrap().down(interface_id)
           };
 
           match res {
@@ -283,7 +262,6 @@ impl IpLayer {
             Err(e) => eprintln!("Error: setting interface status failed: {e}"),
           }
         }
-
         other => {
           eprintln!(
             concat!(

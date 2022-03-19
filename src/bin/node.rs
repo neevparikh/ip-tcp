@@ -20,7 +20,7 @@ fn main() -> Result<()> {
   node.register_handler(
     Protocol::Test,
     Box::new(|packet| {
-      let data = String::from_utf8(packet.get_data().to_vec());
+      let data = String::from_utf8(packet.data().to_vec());
       if let Ok(s) = data {
         println!(
           concat!(
