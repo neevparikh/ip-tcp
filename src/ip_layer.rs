@@ -36,8 +36,11 @@ impl IpLayer {
     let mut our_ip_addrs = HashSet::new();
     let link_layer = Arc::new(RwLock::new(LinkLayer::new(config)));
 
+    let mut neighbors = Vec::new();
+
     for interface in link_layer.read().unwrap().get_interfaces().iter() {
       our_ip_addrs.insert(interface.our_ip);
+      neighbors.push((interface.their_ip, interface.id, 1));
     }
 
     let mut node = IpLayer {
@@ -45,7 +48,7 @@ impl IpLayer {
       link_layer,
       closed: Arc::new(AtomicBool::new(false)),
       send_handle: None,
-      table: Arc::new(ForwardingTable::new()),
+      table: Arc::new(ForwardingTable::new(ip_send_tx.clone(), neighbors)),
       ip_send_tx,
     };
 

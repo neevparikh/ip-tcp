@@ -24,8 +24,23 @@ pub struct ForwardingTable {
 }
 
 impl ForwardingTable {
-  pub fn new() -> ForwardingTable {
+  pub fn new(
+    ip_send_tx: Sender<IpSendMsg>,
+    neighbors: Vec<(Ipv4Addr, InterfaceId, u8)>,
+  ) -> ForwardingTable {
     let forwarding_table = ForwardingTable::default();
+    let mut table = forwarding_table.table.lock().unwrap();
+    for neighbor in neighbors {
+      table.insert(
+        neighbor.0,
+        RoutingEntry {
+          next_hop: neighbor.1,
+          cost: neighbor.2,
+        },
+      );
+    }
+    drop(table);
+    forwarding_table.start_send_keep_alive_thread(ip_send_tx);
     forwarding_table
   }
 
@@ -50,39 +65,46 @@ impl ForwardingTable {
 
   pub fn start_send_keep_alive_thread(&self, ip_send_tx: Sender<IpSendMsg>) {
     let table = self.table.clone();
-    thread::spawn(move || loop {
-      thread::sleep(time::Duration::from_secs(5));
-      let mut rip_msg = RipMsg {
-        command: RipCommand::Response,
-        entries: Vec::new(),
-      };
+    thread::spawn(move || {
+      debug!("Starting keep alive thread");
+      loop {
+        thread::sleep(time::Duration::from_secs(5));
+        let mut rip_msg = RipMsg {
+          command: RipCommand::Response,
+          entries: Vec::new(),
+        };
 
-      for (dest_addr, route_entry) in table.lock().unwrap().iter() {
-        rip_msg.entries.push(RipEntry {
-          cost: route_entry.cost as u32,
-          address: u32::from_ne_bytes(dest_addr.octets()),
-          mask: SUBNET_MASK,
-        });
-      }
+        for (dest_addr, route_entry) in table.lock().unwrap().iter() {
+          rip_msg.entries.push(RipEntry {
+            cost: route_entry.cost as u32,
+            address: u32::from_ne_bytes(dest_addr.octets()),
+            mask: SUBNET_MASK,
+          });
+        }
 
-      for (i, (destination_address, route_entry)) in table.lock().unwrap().iter().enumerate() {
-        if route_entry.cost == 1 {
-          let tmp = rip_msg.entries[i].cost;
-          rip_msg.entries[i].cost = INFINITY_COST;
-          let data = rip_msg.pack();
-          let packet = IpPacket::new_with_defaults(*destination_address, Protocol::RIP, &data);
-          let packet = match packet {
-            Ok(p) => p,
-            Err(e) => {
-              edebug!("{:?}\nCannot create IP packet from {:#?}", e, rip_msg);
-              continue;
+        for (i, (destination_address, route_entry)) in table.lock().unwrap().iter().enumerate() {
+          if route_entry.cost == 1 {
+            let tmp = rip_msg.entries[i].cost;
+            rip_msg.entries[i].cost = INFINITY_COST;
+            let data = rip_msg.pack();
+            let packet = IpPacket::new_with_defaults(*destination_address, Protocol::RIP, &data);
+            let packet = match packet {
+              Ok(p) => p,
+              Err(e) => {
+                edebug!("{:?}\nCannot create IP packet from {:#?}", e, rip_msg);
+                continue;
+              }
+            };
+            debug!(
+              "Sending packet to destination_address {:?}",
+              destination_address
+            );
+            if let Err(_e) = ip_send_tx.send(packet) {
+              debug!("IP layer send channel closed, exiting...");
+              return;
             }
-          };
-          if let Err(_e) = ip_send_tx.send(packet) {
-            debug!("IP layer send channel closed, exiting...");
-            return;
+            rip_msg.entries[i].cost = tmp;
           }
-          rip_msg.entries[i].cost = tmp;
         }
       }
     });
