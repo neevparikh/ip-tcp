@@ -23,9 +23,13 @@ impl RipMsg {
       return Err(anyhow!("Error: RipMsg was less than 4 bytes"));
     }
 
-    if (bytes.len() - 4) % 12 == 0 {
+    if (bytes.len() - 4) % 12 != 0 {
       return Err(anyhow!(
-        "Error: RipMsg does not have enough bytes for complete entry structs"
+        concat!(
+          "Error: RipMsg does not have enough bytes for complete entry structs, ",
+          "only has {}"
+        ),
+        bytes.len()
       ));
     }
 
@@ -39,6 +43,10 @@ impl RipMsg {
 
     if (bytes.len() - 4) / 12 != num_entries as usize {
       edebug!("RipMsg num_entries doesn't match with actual entries");
+      edebug!(
+        "num_entries: {num_entries}, actual: {}",
+        (bytes.len() - 4) / 12
+      );
     }
 
     let mut entries = Vec::new();
@@ -72,9 +80,8 @@ impl RipMsg {
       }),
     ));
 
-    let mut entries = Vec::new();
     for entry in self.entries.iter().take(u16::max_value() as usize) {
-      entries.extend_from_slice(&entry.pack());
+      buffer.extend_from_slice(&entry.pack());
     }
 
     buffer
@@ -93,8 +100,12 @@ impl RipEntry {
     if bytes.len() != 12 {
       return Err(anyhow!("Error: RipEntry was incorrect size"));
     }
+    let cost = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
+    if cost > 16 {
+      return Err(anyhow!("Cost: {cost} exceeded 16"));
+    }
     Ok(RipEntry {
-      cost: u32::from_be_bytes(bytes[0..4].try_into().unwrap()),
+      cost,
       address: u32::from_be_bytes(bytes[4..8].try_into().unwrap()),
       mask: u32::from_be_bytes(bytes[8..12].try_into().unwrap()),
     })

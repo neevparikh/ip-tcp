@@ -52,6 +52,8 @@ impl IpLayer {
       ip_send_tx,
     };
 
+    node.register_handler(Protocol::RIP, node.table.get_rip_handler());
+
     let (link_send_tx, link_recv_rx) = node.link_layer.write().unwrap().run();
 
     let handlers = node.handlers.clone();

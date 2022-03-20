@@ -16,11 +16,13 @@ struct RoutingEntry {
 }
 
 type InternalTable = Arc<Mutex<BTreeMap<Ipv4Addr, RoutingEntry>>>;
+type NeighborTable = Arc<Mutex<BTreeMap<Ipv4Addr, InterfaceId>>>;
 const SUBNET_MASK: u32 = u32::from_ne_bytes([255, 255, 255, 255]);
 
 #[derive(Debug, Default)]
 pub struct ForwardingTable {
   table: InternalTable,
+  neighbors: NeighborTable,
 }
 
 impl ForwardingTable {
@@ -30,7 +32,7 @@ impl ForwardingTable {
   ) -> ForwardingTable {
     let forwarding_table = ForwardingTable::default();
     let mut table = forwarding_table.table.lock().unwrap();
-    for neighbor in neighbors {
+    for neighbor in neighbors.iter() {
       table.insert(
         neighbor.0,
         RoutingEntry {
@@ -40,6 +42,13 @@ impl ForwardingTable {
       );
     }
     drop(table);
+
+    let mut neighbor_table = forwarding_table.neighbors.lock().unwrap();
+    for neighbor in neighbors.iter() {
+      neighbor_table.insert(neighbor.0, neighbor.1);
+    }
+    drop(neighbor_table);
+
     forwarding_table.start_send_keep_alive_thread(ip_send_tx);
     forwarding_table
   }
@@ -47,9 +56,57 @@ impl ForwardingTable {
   /// Returns the handler function which updates the forwarding table based off of
   /// RIP packets
   pub fn get_rip_handler(&self) -> HandlerFunction {
-    let _table_clone = Arc::clone(&self.table);
-    Box::new(move |_ip_packet| {
-      todo!();
+    let table_clone = Arc::clone(&self.table);
+    let neighbors_clone = Arc::clone(&self.neighbors);
+    Box::new(move |ip_packet| {
+      let mut table = table_clone.lock().unwrap();
+      let neighbors = neighbors_clone.lock().unwrap();
+      let rip_bytes = ip_packet.data();
+      let rip_msg = match RipMsg::unpack(rip_bytes) {
+        Ok(msg) => msg,
+        Err(e) => {
+          edebug!("{e}\nErrored unpacking rip message");
+          return;
+        }
+      };
+
+      // get senders interface number (TODO: this is sketch)
+      let source_interface = match neighbors.get(&ip_packet.source_address()) {
+        Some(interface) => *interface,
+        // should only receive RIP messages from neighbors
+        None => return,
+      };
+
+      match rip_msg.command {
+        RipCommand::Request => {
+          debug_assert!(rip_msg.entries.len() == 0);
+          todo!();
+        }
+        RipCommand::Response => {
+          for entry in rip_msg.entries {
+            let addr = Ipv4Addr::from(entry.address);
+            debug_assert!(entry.cost <= INFINITY_COST);
+            let new_cost = entry.cost as u8;
+            let new_routing_entry = RoutingEntry {
+              cost: new_cost,
+              next_hop: source_interface,
+            };
+
+            match table.get_mut(&addr) {
+              Some(curr_route) => {
+                // Note: this cast is safe since max cost is 16 and successfully
+                // unpacking indicates the message is valid
+                if new_cost < curr_route.cost {
+                  *curr_route = new_routing_entry;
+                }
+              }
+              None => {
+                table.insert(addr, new_routing_entry);
+              }
+            }
+          }
+        }
+      }
     })
   }
 
@@ -77,7 +134,7 @@ impl ForwardingTable {
         for (dest_addr, route_entry) in table.lock().unwrap().iter() {
           rip_msg.entries.push(RipEntry {
             cost: route_entry.cost as u32,
-            address: u32::from_ne_bytes(dest_addr.octets()),
+            address: u32::from_be_bytes(dest_addr.octets()),
             mask: SUBNET_MASK,
           });
         }
