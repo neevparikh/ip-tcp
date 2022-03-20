@@ -41,6 +41,7 @@ impl IpLayer {
     for interface in link_layer.read().unwrap().get_interfaces().iter() {
       our_ip_addrs.insert(interface.our_ip);
       neighbors.push((interface.their_ip, interface.id, 1));
+      neighbors.push((interface.our_ip, interface.id, 0));
     }
 
     let mut node = IpLayer {
@@ -186,7 +187,10 @@ impl IpLayer {
           drop(interfaces);
         }
         "routes" | "lr" => {
-          todo!();
+          let routes = self.table.get_table();
+          for (dest, route) in routes.iter() {
+            println!("{}: {}", dest, route);
+          }
         }
         "q" => {
           break;

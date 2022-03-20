@@ -1,19 +1,15 @@
+use std::cmp;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::net::Ipv4Addr;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::{thread, time};
 
 use crate::ip_packet::IpPacket;
 use crate::protocol::Protocol;
 use crate::rip_message::{RipCommand, RipEntry, RipMsg, INFINITY_COST};
 use crate::{debug, edebug, HandlerFunction, InterfaceId, IpSendMsg};
-
-#[derive(Debug)]
-struct RoutingEntry {
-  next_hop: InterfaceId,
-  cost: u8,
-}
 
 type InternalTable = Arc<Mutex<BTreeMap<Ipv4Addr, RoutingEntry>>>;
 type NeighborTable = Arc<Mutex<BTreeMap<Ipv4Addr, InterfaceId>>>;
@@ -53,6 +49,10 @@ impl ForwardingTable {
     forwarding_table
   }
 
+  pub fn get_table(&self) -> MutexGuard<BTreeMap<Ipv4Addr, RoutingEntry>> {
+    self.table.lock().unwrap()
+  }
+
   /// Returns the handler function which updates the forwarding table based off of
   /// RIP packets
   pub fn get_rip_handler(&self) -> HandlerFunction {
@@ -86,7 +86,7 @@ impl ForwardingTable {
           for entry in rip_msg.entries {
             let addr = Ipv4Addr::from(entry.address);
             debug_assert!(entry.cost <= INFINITY_COST);
-            let new_cost = entry.cost as u8;
+            let new_cost = cmp::min(entry.cost + 1, INFINITY_COST) as u8;
             let new_routing_entry = RoutingEntry {
               cost: new_cost,
               next_hop: source_interface,
@@ -165,5 +165,17 @@ impl ForwardingTable {
         }
       }
     });
+  }
+}
+
+#[derive(Debug)]
+pub struct RoutingEntry {
+  next_hop: InterfaceId,
+  cost: u8,
+}
+
+impl fmt::Display for RoutingEntry {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "next_hop {}, cost {}", self.next_hop, self.cost)
   }
 }
