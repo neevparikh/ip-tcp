@@ -66,7 +66,6 @@ impl IpPacket {
     packet.set_destination_address(destination);
     packet.set_type_of_service(type_of_service);
 
-    // TODO: this is necessary which doesn't make any sense
     packet.calculate_and_set_checksum();
 
     Ok(packet)
@@ -121,8 +120,6 @@ impl IpPacket {
     self.validate_checksum()?;
     self.validate_options()?;
 
-    // TODO
-    // todo!("Figure out what else needs to be validated here");
     Ok(())
   }
 
@@ -254,7 +251,6 @@ impl IpPacket {
     }
     set_high_order_four_bits(&mut self.header[0], &version);
 
-    // TODO: should be able to do a partial update and not recalculate whole thing
     self.calculate_and_set_checksum();
     Ok(())
   }
@@ -265,7 +261,6 @@ impl IpPacket {
     }
     set_low_order_four_bits(&mut self.header[0], &ihl);
 
-    // TODO: should be able to do a partial update and not recalculate whole thing
     self.calculate_and_set_checksum();
     Ok(())
   }
@@ -284,7 +279,6 @@ impl IpPacket {
     self.header[2] = get_high_order_byte(&total_length);
     self.header[3] = get_low_order_byte(&total_length);
 
-    // TODO: should be able to do a partial update and not recalculate whole thing
     self.calculate_and_set_checksum();
   }
 
@@ -292,28 +286,24 @@ impl IpPacket {
     self.header[4] = get_high_order_byte(&identification);
     self.header[5] = get_low_order_byte(&identification);
 
-    // TODO: should be able to do a partial update and not recalculate whole thing
     self.calculate_and_set_checksum();
   }
 
   pub(crate) fn set_fragment_offset(&mut self, fragment_offset: FragmentOffset) {
     (self.header[6], self.header[7]) = fragment_offset.to_bytes();
 
-    // TODO: should be able to do a partial update and not recalculate whole thing
     self.calculate_and_set_checksum();
   }
 
   pub(crate) fn set_time_to_live(&mut self, time_to_live: u8) {
     self.header[8] = time_to_live;
 
-    // TODO: should be able to do a partial update and not recalculate whole thing
     self.calculate_and_set_checksum();
   }
 
   pub(crate) fn set_protocol(&mut self, protocol: Protocol) {
     self.header[9] = protocol.into();
 
-    // TODO: should be able to do a partial update and not recalculate whole thing
     self.calculate_and_set_checksum();
   }
 
@@ -325,7 +315,6 @@ impl IpPacket {
     self.header[14] = addr_bytes[2];
     self.header[15] = addr_bytes[3];
 
-    // TODO: should be able to do a partial update and not recalculate whole thing
     self.calculate_and_set_checksum();
   }
 
@@ -336,7 +325,6 @@ impl IpPacket {
     self.header[18] = addr_bytes[2];
     self.header[19] = addr_bytes[3];
 
-    // TODO: should be able to do a partial update and not recalculate whole thing
     self.calculate_and_set_checksum();
   }
 
@@ -347,7 +335,6 @@ impl IpPacket {
       ));
     }
 
-    // TODO: validate the actual fields
     Ok(())
   }
 }
