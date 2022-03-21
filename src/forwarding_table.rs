@@ -40,18 +40,19 @@ impl ForwardingTable {
     our_interfaces: Vec<(Ipv4Addr, InterfaceId)>,
   ) -> (ForwardingTable, HandlerFunction) {
     let mut forwarding_table = ForwardingTable::default();
-    let mut table = forwarding_table.table.lock().unwrap();
-    for our_interface in our_interfaces.iter() {
-      table.insert(
-        our_interface.0,
-        RoutingEntry {
-          next_hop: our_interface.1,
-          cost: 0,
-          expiration_time: None,
-        },
-      );
-    }
-    drop(table);
+    *forwarding_table.table.lock().unwrap() = our_interfaces
+      .iter()
+      .map(|&(addr, id)| {
+        (
+          addr,
+          RoutingEntry {
+            next_hop: id,
+            cost: 0,
+            expiration_time: None,
+          },
+        )
+      })
+      .collect();
 
     forwarding_table.neighbors = Arc::new(neighbors.into_iter().collect());
 
@@ -60,7 +61,13 @@ impl ForwardingTable {
     ForwardingTable::start_reaper_thread(forwarding_table.table.clone());
 
     let rip_handler = forwarding_table.get_rip_handler(ip_send_tx.clone(), our_interfaces_table);
-    forwarding_table.start_send_keep_alive_thread(ip_send_tx);
+    forwarding_table.start_send_keep_alive_thread(ip_send_tx.clone());
+
+    if let Err(_e) =
+      ForwardingTable::make_request_and_send_to_all(&ip_send_tx, forwarding_table.neighbors.clone())
+    {
+      edebug!("Error in make_and_send_to_all");
+    }
 
     (forwarding_table, rip_handler)
   }
@@ -100,8 +107,12 @@ impl ForwardingTable {
       match rip_msg.command {
         RipCommand::Request => {
           debug_assert!(rip_msg.entries.len() == 0);
-          todo!();
-          // ip_send_tx.send();
+          let table = table.clone();
+          if let Err(_e) =
+            ForwardingTable::make_response_and_send_to_all(&ip_send_tx, neighbors.clone(), table)
+          {
+            edebug!("Error in sending to all in rip handler");
+          }
         }
         RipCommand::Response => {
           let mut updated_entries: PartialTable = PartialTable::new();
@@ -135,9 +146,11 @@ impl ForwardingTable {
           }
 
           if updated_entries.len() > 0 {
-            if let Err(_e) =
-              ForwardingTable::make_and_send_to_all(&ip_send_tx, neighbors.clone(), updated_entries)
-            {
+            if let Err(_e) = ForwardingTable::make_response_and_send_to_all(
+              &ip_send_tx,
+              neighbors.clone(),
+              updated_entries,
+            ) {
               edebug!("Error in sending to all in rip handler");
             }
           }
@@ -165,14 +178,14 @@ impl ForwardingTable {
     thread::spawn(move || {
       debug!("Starting keep alive thread");
       loop {
-        thread::sleep(Duration::from_secs(5));
         let table = table.lock().unwrap().clone();
         if let Err(_e) =
-          ForwardingTable::make_and_send_to_all(&ip_send_tx, neighbors.clone(), table)
+          ForwardingTable::make_response_and_send_to_all(&ip_send_tx, neighbors.clone(), table)
         {
           debug!("IP layer send channel closed, exiting...");
           return;
         }
+        thread::sleep(Duration::from_secs(5));
       }
     });
   }
@@ -184,7 +197,7 @@ impl ForwardingTable {
   /// but I think that would be premature optimization.
   fn start_reaper_thread(table: InternalTable) {
     thread::spawn(move || loop {
-      thread::sleep(Duration::from_secs(1));
+      thread::sleep(Duration::from_millis(200));
       let mut table = table.lock().unwrap();
       let now = Instant::now();
       table
@@ -200,7 +213,25 @@ impl ForwardingTable {
     });
   }
 
-  fn make_and_send_to_all(
+  fn make_request_and_send_to_all(
+    ip_send_tx: &Sender<IpSendMsg>,
+    neighbors: SharedInterfaceTable,
+  ) -> Result<()> {
+    for (destination_address, _interface_id) in neighbors.iter() {
+      let rip_msg = RipMsg {
+        command: RipCommand::Request,
+        entries: Vec::new(),
+      };
+      debug!(
+        "Sending request to destination_address {:?}",
+        destination_address
+      );
+      ForwardingTable::make_and_send(rip_msg, &ip_send_tx, destination_address.clone())?
+    }
+    Ok(())
+  }
+
+  fn make_response_and_send_to_all(
     ip_send_tx: &Sender<IpSendMsg>,
     neighbors: SharedInterfaceTable,
     table: PartialTable,
@@ -224,6 +255,11 @@ impl ForwardingTable {
           mask: SUBNET_MASK,
         });
       }
+      debug!(
+        "Sending response to destination_address {:?}",
+        destination_address
+      );
+
       ForwardingTable::make_and_send(rip_msg, &ip_send_tx, destination_address.clone())?
     }
     Ok(())
@@ -243,12 +279,6 @@ impl ForwardingTable {
         return Ok(());
       }
     };
-
-    debug!(
-      "Sending packet to destination_address {:?}",
-      destination_address
-    );
-
     ip_send_tx.send(packet)?;
     Ok(())
   }
