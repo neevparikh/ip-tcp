@@ -46,20 +46,19 @@ impl IpLayer {
       our_interfaces.push((interface.our_ip, interface.id));
     }
 
+    let (table, rip_handler) = ForwardingTable::new(ip_send_tx.clone(), neighbors, our_interfaces);
+    let table = Arc::new(table);
+
     let mut node = IpLayer {
       handlers: Arc::new(Mutex::new(HashMap::new())),
       link_layer,
       closed: Arc::new(AtomicBool::new(false)),
       send_handle: None,
-      table: Arc::new(ForwardingTable::new(
-        ip_send_tx.clone(),
-        neighbors,
-        our_interfaces,
-      )),
+      table,
       ip_send_tx,
     };
 
-    node.register_handler(Protocol::RIP, node.table.get_rip_handler());
+    node.register_handler(Protocol::RIP, rip_handler);
 
     let (link_send_tx, link_recv_rx) = node.link_layer.write().unwrap().run();
 
@@ -302,7 +301,7 @@ impl IpLayer {
     packet: &IpPacket,
   ) -> Result<()> {
     let protocol = packet.protocol();
-    debug!("Handling packet with protocol {protocol}");
+    // debug!("Handling packet with protocol {protocol}");
     let handlers = handlers.lock().unwrap();
     let handler = handlers.get(&protocol);
 

@@ -12,15 +12,25 @@ use crate::protocol::Protocol;
 use crate::rip_message::{RipCommand, RipEntry, RipMsg, INFINITY_COST};
 use crate::{debug, edebug, HandlerFunction, InterfaceId, IpSendMsg};
 
+use anyhow::Result;
+
 type InternalTable = Arc<Mutex<BTreeMap<Ipv4Addr, RoutingEntry>>>;
-type InterfaceTable = Arc<Mutex<BTreeMap<Ipv4Addr, InterfaceId>>>;
+type PartialTable = BTreeMap<Ipv4Addr, RoutingEntry>;
+type InterfaceTable = BTreeMap<Ipv4Addr, InterfaceId>;
+type SharedInterfaceTable = Arc<BTreeMap<Ipv4Addr, InterfaceId>>;
 const SUBNET_MASK: u32 = u32::from_ne_bytes([255, 255, 255, 255]);
 
 #[derive(Debug, Default)]
 pub struct ForwardingTable {
   table: InternalTable,
-  neighbors: InterfaceTable,
-  our_interfaces: InterfaceTable,
+  neighbors: SharedInterfaceTable,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct RoutingEntry {
+  next_hop: InterfaceId,
+  cost: u8,
+  expiration_time: Option<Instant>,
 }
 
 impl ForwardingTable {
@@ -28,8 +38,8 @@ impl ForwardingTable {
     ip_send_tx: Sender<IpSendMsg>,
     neighbors: Vec<(Ipv4Addr, InterfaceId)>,
     our_interfaces: Vec<(Ipv4Addr, InterfaceId)>,
-  ) -> ForwardingTable {
-    let forwarding_table = ForwardingTable::default();
+  ) -> (ForwardingTable, HandlerFunction) {
+    let mut forwarding_table = ForwardingTable::default();
     let mut table = forwarding_table.table.lock().unwrap();
     for our_interface in our_interfaces.iter() {
       table.insert(
@@ -43,18 +53,16 @@ impl ForwardingTable {
     }
     drop(table);
 
-    let mut neighbor_table = forwarding_table.neighbors.lock().unwrap();
-    *neighbor_table = neighbors.into_iter().collect();
-    drop(neighbor_table);
+    forwarding_table.neighbors = Arc::new(neighbors.into_iter().collect());
 
-    let mut our_interfaces_table = forwarding_table.our_interfaces.lock().unwrap();
-    *our_interfaces_table = our_interfaces.into_iter().collect();
-    drop(our_interfaces_table);
+    let our_interfaces_table = our_interfaces.into_iter().collect();
 
     ForwardingTable::start_reaper_thread(forwarding_table.table.clone());
 
+    let rip_handler = forwarding_table.get_rip_handler(ip_send_tx.clone(), our_interfaces_table);
     forwarding_table.start_send_keep_alive_thread(ip_send_tx);
-    forwarding_table
+
+    (forwarding_table, rip_handler)
   }
 
   pub fn get_table(&self) -> MutexGuard<BTreeMap<Ipv4Addr, RoutingEntry>> {
@@ -63,15 +71,16 @@ impl ForwardingTable {
 
   /// Returns the handler function which updates the forwarding table based off of
   /// RIP packets
-  pub fn get_rip_handler(&self) -> HandlerFunction {
+  pub fn get_rip_handler(
+    &self,
+    ip_send_tx: Sender<IpSendMsg>,
+    our_interfaces: InterfaceTable,
+  ) -> HandlerFunction {
     let table = self.table.clone();
     let neighbors = self.neighbors.clone();
-    let our_interfaces = self.our_interfaces.clone();
 
     Box::new(move |ip_packet| {
       let mut table = table.lock().unwrap();
-      let neighbors = neighbors.lock().unwrap();
-      let our_interfaces = our_interfaces.lock().unwrap();
       let rip_bytes = ip_packet.data();
       let rip_msg = match RipMsg::unpack(rip_bytes) {
         Ok(msg) => msg,
@@ -92,12 +101,15 @@ impl ForwardingTable {
         RipCommand::Request => {
           debug_assert!(rip_msg.entries.len() == 0);
           todo!();
+          // ip_send_tx.send();
         }
         RipCommand::Response => {
+          let mut updated_entries: PartialTable = PartialTable::new();
+
           for entry in rip_msg.entries {
             let addr = Ipv4Addr::from(entry.address);
             debug_assert!(entry.cost <= INFINITY_COST);
-            let new_cost = cmp::min(entry.cost + 1, INFINITY_COST) as u8;
+            let new_cost = cmp::min(entry.cost + 1, INFINITY_COST);
             let new_routing_entry = RoutingEntry {
               cost: new_cost,
               next_hop: source_interface,
@@ -106,16 +118,27 @@ impl ForwardingTable {
 
             match table.get_mut(&addr) {
               Some(curr_route) => {
-                if !our_interfaces.contains_key(&addr)
-                  && (new_cost < curr_route.cost
-                    || curr_route.next_hop == new_routing_entry.next_hop)
-                {
+                let not_us = !our_interfaces.contains_key(&addr);
+                let better_cost = new_cost < curr_route.cost;
+                let same_next_hop = curr_route.next_hop == new_routing_entry.next_hop;
+                debug_assert!(!(!not_us && better_cost));
+                if better_cost || (not_us && same_next_hop) {
                   *curr_route = new_routing_entry;
+                  updated_entries.insert(addr, new_routing_entry);
                 }
               }
               None => {
                 table.insert(addr, new_routing_entry);
+                updated_entries.insert(addr, new_routing_entry);
               }
+            }
+          }
+
+          if updated_entries.len() > 0 {
+            if let Err(_e) =
+              ForwardingTable::make_and_send_to_all(&ip_send_tx, neighbors.clone(), updated_entries)
+            {
+              edebug!("Error in sending to all in rip handler");
             }
           }
         }
@@ -133,8 +156,7 @@ impl ForwardingTable {
     drop(table);
 
     // Also check if they are our neighbor
-    let neighbors = self.neighbors.lock().unwrap();
-    neighbors.get(&ip).cloned()
+    self.neighbors.get(&ip).cloned()
   }
 
   pub fn start_send_keep_alive_thread(&self, ip_send_tx: Sender<IpSendMsg>) {
@@ -144,46 +166,12 @@ impl ForwardingTable {
       debug!("Starting keep alive thread");
       loop {
         thread::sleep(Duration::from_secs(5));
-
-        for (destination_address, interface_id) in neighbors.lock().unwrap().iter() {
-          let mut rip_msg = RipMsg {
-            command: RipCommand::Response,
-            entries: Vec::new(),
-          };
-          // I don't think there is a good way to avoid the double for loop
-          for (curr_dest, route_entry) in table.lock().unwrap().iter() {
-            // Poison reverse
-            let cost = if &route_entry.next_hop == interface_id && route_entry.cost != 0 {
-              INFINITY_COST
-            } else {
-              route_entry.cost as u32
-            };
-            rip_msg.entries.push(RipEntry {
-              cost,
-              address: u32::from_be_bytes(curr_dest.octets()),
-              mask: SUBNET_MASK,
-            });
-          }
-
-          let data = rip_msg.pack();
-          let packet = IpPacket::new_with_defaults(*destination_address, Protocol::RIP, &data);
-          let packet = match packet {
-            Ok(p) => p,
-            Err(e) => {
-              edebug!("{:?}\nCannot create IP packet from {:#?}", e, rip_msg);
-              continue;
-            }
-          };
-
-          debug!(
-            "Sending packet to destination_address {:?}",
-            destination_address
-          );
-
-          if let Err(_e) = ip_send_tx.send(packet) {
-            debug!("IP layer send channel closed, exiting...");
-            return;
-          }
+        let table = table.lock().unwrap().clone();
+        if let Err(_e) =
+          ForwardingTable::make_and_send_to_all(&ip_send_tx, neighbors.clone(), table)
+        {
+          debug!("IP layer send channel closed, exiting...");
+          return;
         }
       }
     });
@@ -204,20 +192,66 @@ impl ForwardingTable {
         .for_each(|(_k, v)| match v.expiration_time {
           Some(t) => {
             if t < now {
-              v.cost = INFINITY_COST as u8;
+              v.cost = INFINITY_COST;
             }
           }
           None => (),
         });
     });
   }
-}
 
-#[derive(Debug)]
-pub struct RoutingEntry {
-  next_hop: InterfaceId,
-  cost: u8,
-  expiration_time: Option<Instant>,
+  fn make_and_send_to_all(
+    ip_send_tx: &Sender<IpSendMsg>,
+    neighbors: SharedInterfaceTable,
+    table: PartialTable,
+  ) -> Result<()> {
+    for (destination_address, interface_id) in neighbors.iter() {
+      let mut rip_msg = RipMsg {
+        command: RipCommand::Response,
+        entries: Vec::new(),
+      };
+      // I don't think there is a good way to avoid the double for loop
+      for (curr_dest, route_entry) in table.iter() {
+        // Poison reverse
+        let cost = if &route_entry.next_hop == interface_id && route_entry.cost != 0 {
+          INFINITY_COST
+        } else {
+          route_entry.cost
+        };
+        rip_msg.entries.push(RipEntry {
+          cost,
+          address: u32::from_be_bytes(curr_dest.octets()),
+          mask: SUBNET_MASK,
+        });
+      }
+      ForwardingTable::make_and_send(rip_msg, &ip_send_tx, destination_address.clone())?
+    }
+    Ok(())
+  }
+
+  fn make_and_send(
+    rip_msg: RipMsg,
+    ip_send_tx: &Sender<IpSendMsg>,
+    destination_address: Ipv4Addr,
+  ) -> Result<()> {
+    let data = rip_msg.pack();
+    let packet = IpPacket::new_with_defaults(destination_address, Protocol::RIP, &data);
+    let packet = match packet {
+      Ok(p) => p,
+      Err(e) => {
+        edebug!("{:?}\nCannot create IP packet from {:#?}", e, rip_msg);
+        return Ok(());
+      }
+    };
+
+    debug!(
+      "Sending packet to destination_address {:?}",
+      destination_address
+    );
+
+    ip_send_tx.send(packet)?;
+    Ok(())
+  }
 }
 
 impl fmt::Display for RoutingEntry {

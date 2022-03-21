@@ -15,7 +15,14 @@ pub struct RipMsg {
   pub entries: Vec<RipEntry>,
 }
 
-pub const INFINITY_COST: u32 = 16;
+#[derive(Debug)]
+pub struct RipEntry {
+  pub cost: u8,
+  pub address: u32,
+  pub mask: u32,
+}
+
+pub const INFINITY_COST: u8 = 16;
 
 impl RipMsg {
   pub fn unpack(bytes: &[u8]) -> Result<RipMsg> {
@@ -88,13 +95,6 @@ impl RipMsg {
   }
 }
 
-#[derive(Debug)]
-pub struct RipEntry {
-  pub cost: u32,
-  pub address: u32,
-  pub mask: u32,
-}
-
 impl RipEntry {
   pub fn unpack(bytes: &[u8]) -> Result<RipEntry> {
     if bytes.len() != 12 {
@@ -104,6 +104,7 @@ impl RipEntry {
     if cost > 16 {
       return Err(anyhow!("Cost: {cost} exceeded 16"));
     }
+    let cost = cost as u8;
     Ok(RipEntry {
       cost,
       address: u32::from_be_bytes(bytes[4..8].try_into().unwrap()),
@@ -112,7 +113,7 @@ impl RipEntry {
   }
   pub fn pack(&self) -> Vec<u8> {
     let mut buffer = Vec::new();
-    buffer.extend_from_slice(&u32::to_be_bytes(self.cost));
+    buffer.extend_from_slice(&u32::to_be_bytes(self.cost as u32));
     buffer.extend_from_slice(&u32::to_be_bytes(self.address));
     buffer.extend_from_slice(&u32::to_be_bytes(self.mask));
     buffer
