@@ -204,16 +204,11 @@ impl IpPacket {
   /// Performs full checksum calculation
   fn calculate_checksum(&self) -> u16 {
     let mut checksum = 0u16;
-    let mut carries = 0u16;
     for i in (0..20).step_by(2) {
       // skip checksum field
       if i != 10 {
         let (s, c) = checksum.overflowing_add(convert_to_u16(&self.header[i], &self.header[i + 1]));
-        checksum = s;
-
-        if c {
-          carries += 1;
-        }
+        checksum = if c { s + 1 } else { s };
       }
     }
 
@@ -223,15 +218,11 @@ impl IpPacket {
         &self.option_data[i],
         &self.option_data[i + 1],
       ));
-      checksum = s;
-
-      if c {
-        carries += 1;
-      }
+      checksum = if c { s + 1 } else { s };
     }
 
     // Note ! is bitwise not
-    !(checksum + carries)
+    !checksum
   }
 
   fn validate_checksum(&self) -> Result<()> {
