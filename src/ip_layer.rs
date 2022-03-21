@@ -164,45 +164,25 @@ impl IpLayer {
     }
   }
 
-  // TODO: break this down into functions
   pub fn run(&mut self) -> Result<()> {
     loop {
+      // read user input
       let mut buf = String::new();
       stdin().read_line(&mut buf)?;
-
       let s = buf.as_str().trim();
       let tokens: Vec<String> = match shellwords::split(s) {
+        Ok(tokens) if tokens.len() == 0 => continue,
         Ok(tokens) => tokens,
         Err(e) => {
           eprintln!("Error: {e}");
           continue;
         }
       };
-      if tokens.len() == 0 {
-        continue;
-      }
 
-      match &*tokens[0] {
-        "interfaces" | "li" => {
-          let layer_read = self.link_layer.read().unwrap();
-          let interfaces = layer_read.get_interfaces();
-          for interface in interfaces.iter() {
-            println!("{}", interface);
-          }
-          drop(interfaces);
-        }
-        "routes" | "lr" => {
-          let routes = self.table.get_table();
-          for (dest, route) in routes.iter() {
-            println!("{}: {}", dest, route);
-          }
-        }
-        "q" => {
-          break;
-        }
+      match tokens[0].as_str() {
         "send" => {
           if tokens.len() != 4 {
-            println!(
+            eprintln!(
               "Error: '{}' expected 3 arguments received {}",
               tokens[0],
               tokens.len() - 1
@@ -275,6 +255,23 @@ impl IpLayer {
             Ok(_) => (),
             Err(e) => eprintln!("Error: setting interface status failed: {e}"),
           }
+        }
+        "interfaces" | "li" => {
+          let layer_read = self.link_layer.read().unwrap();
+          let interfaces = layer_read.get_interfaces();
+          for interface in interfaces.iter() {
+            println!("{}", interface);
+          }
+          drop(interfaces);
+        }
+        "routes" | "lr" => {
+          let routes = self.table.get_table();
+          for (dest, route) in routes.iter() {
+            println!("{}: {}", dest, route);
+          }
+        }
+        "q" => {
+          break;
         }
         other => {
           eprintln!(
