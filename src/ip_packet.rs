@@ -217,7 +217,8 @@ impl IpPacket {
       ));
     }
 
-    checksum.wrapping_sub(self.header_checksum())
+    // Note ! is bitwise not
+    !checksum.wrapping_sub(self.header_checksum())
   }
 
   fn validate_checksum(&self) -> Result<()> {
