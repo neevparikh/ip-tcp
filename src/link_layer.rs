@@ -12,7 +12,7 @@ use anyhow::{anyhow, Result};
 use crate::interface::{Interface, State};
 use crate::ip_packet::IpPacket;
 use crate::lnx_config::LnxConfig;
-use crate::{debug, InterfaceId};
+use crate::{debug, edebug, InterfaceId};
 
 const MAX_SIZE: usize = 65536;
 
@@ -187,7 +187,8 @@ impl LinkLayer {
       match local_link.recv_from(&mut buf) {
         Ok((bytes_read, src)) => {
           let packet = match IpPacket::unpack(&buf[..bytes_read]) {
-            Err(_e) => {
+            Err(e) => {
+              edebug!("{}", e);
               debug!("Warning: Malformed packet from {}, dropping...", src);
               continue;
             }

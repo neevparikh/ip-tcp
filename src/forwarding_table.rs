@@ -92,7 +92,8 @@ impl ForwardingTable {
       let rip_msg = match RipMsg::unpack(rip_bytes) {
         Ok(msg) => msg,
         Err(e) => {
-          edebug!("{e}\nErrored unpacking rip message");
+          edebug!("{e}");
+          edebug!("Errored unpacking rip message");
           return;
         }
       };
@@ -108,9 +109,10 @@ impl ForwardingTable {
         RipCommand::Request => {
           debug_assert!(rip_msg.entries.len() == 0);
           let table = table.clone();
-          if let Err(_e) =
+          if let Err(e) =
             ForwardingTable::make_response_and_send_to_all(&ip_send_tx, neighbors.clone(), table)
           {
+            edebug!("{}", e);
             edebug!("Error in sending to all in rip handler");
           }
         }
@@ -146,11 +148,12 @@ impl ForwardingTable {
           }
 
           if updated_entries.len() > 0 {
-            if let Err(_e) = ForwardingTable::make_response_and_send_to_all(
+            if let Err(e) = ForwardingTable::make_response_and_send_to_all(
               &ip_send_tx,
               neighbors.clone(),
               updated_entries,
             ) {
+              edebug!("{}", e);
               edebug!("Error in sending to all in rip handler");
             }
           }
@@ -179,9 +182,10 @@ impl ForwardingTable {
       debug!("Starting keep alive thread");
       loop {
         let table = table.lock().unwrap().clone();
-        if let Err(_e) =
+        if let Err(e) =
           ForwardingTable::make_response_and_send_to_all(&ip_send_tx, neighbors.clone(), table)
         {
+          edebug!("{}", e);
           debug!("IP layer send channel closed, exiting...");
           return;
         }
