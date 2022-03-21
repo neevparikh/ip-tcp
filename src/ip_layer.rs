@@ -94,8 +94,12 @@ impl IpLayer {
   ) {
     loop {
       match link_recv_rx.recv() {
-        Ok((interface, packet)) => {
+        Ok((interface, mut packet)) => {
           if our_ip_addrs.contains(&packet.destination_address()) {
+            debug!(
+              "packet dst {:?} ours, calling handle_packet...",
+              packet.destination_address()
+            );
             match IpLayer::handle_packet(&handlers, interface, &packet) {
               Ok(()) => (),
               Err(e) => edebug!("Packet handler errored: {e}"),
@@ -106,6 +110,7 @@ impl IpLayer {
               packet.destination_address()
             );
           } else {
+            packet.set_time_to_live(packet.time_to_live() - 1);
             debug!(
               "packet dst {:?}, forwarding...",
               packet.destination_address()
@@ -298,7 +303,7 @@ impl IpLayer {
     packet: &IpPacket,
   ) -> Result<()> {
     let protocol = packet.protocol();
-    // debug!("Handling packet with protocol {protocol}");
+    debug!("Handling packet with protocol {protocol}");
     let handlers = handlers.lock().unwrap();
     let handler = handlers.get(&protocol);
 
