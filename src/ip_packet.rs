@@ -204,21 +204,34 @@ impl IpPacket {
   /// Performs full checksum calculation
   fn calculate_checksum(&self) -> u16 {
     let mut checksum = 0u16;
-    for i in 0..10 {
-      checksum =
-        checksum.wrapping_add(convert_to_u16(&self.header[2 * i], &self.header[2 * i + 1]));
+    let mut carries = 0u16;
+    for i in (0..20).step_by(2) {
+      // skip checksum field
+      if i != 10 {
+        let (s, c) = checksum.overflowing_add(convert_to_u16(&self.header[i], &self.header[i + 1]));
+        checksum = s;
+
+        if c {
+          carries += 1;
+        }
+      }
     }
 
     debug_assert!(self.option_data.len() % 4 == 0);
-    for i in 0..(self.option_data.len() / 2) {
-      checksum = checksum.wrapping_add(convert_to_u16(
-        &self.option_data[2 * i],
-        &self.option_data[2 * i + 1],
+    for i in (0..self.option_data.len()).step_by(2) {
+      let (s, c) = checksum.overflowing_add(convert_to_u16(
+        &self.option_data[i],
+        &self.option_data[i + 1],
       ));
+      checksum = s;
+
+      if c {
+        carries += 1;
+      }
     }
 
     // Note ! is bitwise not
-    !checksum.wrapping_sub(self.header_checksum())
+    !(checksum + carries)
   }
 
   fn validate_checksum(&self) -> Result<()> {
@@ -228,7 +241,8 @@ impl IpPacket {
       Ok(())
     } else {
       Err(anyhow!(
-        "Checksum invalid, expected {expected}, actual {actual}"
+        "{:#?}\nChecksum invalid, expected {expected}, actual {actual}",
+        self
       ))
     }
   }
