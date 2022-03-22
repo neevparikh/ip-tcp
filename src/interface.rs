@@ -1,49 +1,86 @@
-use anyhow::Result;
-use std::net::{Ipv4Addr, UdpSocket};
-use std::sync::{Arc, Condvar, Mutex};
+use anyhow::{anyhow, Result};
+use std::fmt;
+use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 
-#[derive(Debug)]
-enum State {
+use crate::InterfaceId;
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum State {
   UP,
   DOWN,
-  CLOSED,
-  ERRORED,
 }
 
 #[derive(Debug)]
 pub struct Interface {
-  id: usize,
-  outgoing_link: UdpSocket,
-  our_ip: Ipv4Addr,
-  their_ip: Ipv4Addr,
-  state: Arc<(Mutex<State>, Condvar)>,
+  pub id: InterfaceId,
+  pub outgoing_link: String,
+  pub outgoing_link_addr: SocketAddr,
+  pub our_ip: Ipv4Addr,
+  pub their_ip: Ipv4Addr,
+  state: State,
 }
 
 impl Interface {
   pub fn new(
-    id: usize,
-    outgoing_link: UdpSocket,
+    id: InterfaceId,
+    outgoing_link: String,
     our_ip: Ipv4Addr,
     their_ip: Ipv4Addr,
   ) -> Result<Interface> {
+    let outgoing_link_addr = match outgoing_link.to_socket_addrs()?.next() {
+      Some(addr) => addr,
+      None => return Err(anyhow!("Invalid socket_addr: {outgoing_link}")),
+    };
     Ok(Interface {
       id,
       outgoing_link,
+      outgoing_link_addr,
       our_ip,
       their_ip,
-      state: Arc::new((Mutex::new(State::DOWN), Condvar::new())),
+      state: State::UP,
     })
   }
 
-  pub fn up(&self) -> Result<()> {
-    todo!()
+  /// Sets interface to UP state
+  pub fn up(&mut self) {
+    self.state = State::UP;
   }
 
-  pub fn down(&self) -> Result<()> {
-    todo!()
+  /// Sets interface to DOWN state
+  pub fn down(&mut self) {
+    self.state = State::DOWN;
   }
 
   pub fn send(&self) -> Result<()> {
     todo!()
+  }
+
+  pub fn state(&self) -> State {
+    return self.state;
+  }
+}
+
+impl fmt::Display for Interface {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    if cfg!(debug_assertions) {
+      write!(
+        f,
+        "{}: status {:?}, outgoing_link {}, their_ip {}, our_ip {}",
+        self.id,
+        self.state(),
+        self.outgoing_link,
+        self.their_ip,
+        self.our_ip
+      )
+    } else {
+      write!(
+        f,
+        "{}: status {:?}, their_ip {}, our_ip {}",
+        self.id,
+        self.state(),
+        self.their_ip,
+        self.our_ip
+      )
+    }
   }
 }

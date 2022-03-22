@@ -1,9 +1,16 @@
 use anyhow::{anyhow, Error, Result};
+use std::fmt;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum Protocol {
   Test,
   RIP,
+}
+
+impl fmt::Display for Protocol {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{:?}", self)
+  }
 }
 
 impl TryFrom<u8> for Protocol {
