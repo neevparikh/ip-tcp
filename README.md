@@ -37,11 +37,5 @@ Our abstraction is as follows:
 ## Details
 
 * We developed on our machines and the docker container
-* We saw a weird piece of behavior where on our local laptops, the reference node and our node
-  couldn't send messages between each other. However, reference nodes could send to reference nodes
-  and our node could send to other our nodes. 
-  However, on the container, our nodes can send to the reference nodes and vice-versa. As a result,
-  we decided it was okay. Curiously, Wireshark says that the packets from the reference nodes error
-  because it says UDP port not available. 
 * We decided to not remove entries from the routing table if they are set to an infinite cost, but
   we make sure we don't send to them.
