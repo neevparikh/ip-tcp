@@ -101,7 +101,6 @@ fn run(mut ip_layer: IpLayer) -> Result<()> {
           }),
         Err(e) => {
           eprintln!("Error: {e}");
-          continue;
         }
       },
       "interfaces" | "li" => ip_layer.print_interfaces(),
