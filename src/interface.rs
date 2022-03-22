@@ -1,6 +1,7 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use std::fmt;
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::str::FromStr;
 
 use crate::InterfaceId;
 
@@ -8,6 +9,17 @@ use crate::InterfaceId;
 pub enum State {
   UP,
   DOWN,
+}
+
+impl FromStr for State {
+  type Err = Error;
+  fn from_str(input: &str) -> Result<State> {
+    match input {
+      "down" => Ok(State::DOWN),
+      "up" => Ok(State::UP),
+      other => Err(anyhow!("Unknown state {other}")),
+    }
+  }
 }
 
 #[derive(Debug)]
