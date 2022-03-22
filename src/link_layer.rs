@@ -10,9 +10,8 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 
 use crate::interface::{Interface, State};
-use crate::ip_packet::IpPacket;
 use crate::lnx_config::LnxConfig;
-use crate::{debug, edebug, InterfaceId};
+use crate::{debug, InterfaceId};
 
 const MAX_SIZE: usize = 65536;
 
