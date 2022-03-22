@@ -32,6 +32,10 @@ impl LinkLayer {
     self.interfaces.read().unwrap()
   }
 
+  pub fn get_interfaces_clone(&self) -> Arc<RwLock<Vec<Interface>>> {
+    self.interfaces.clone()
+  }
+
   /// Builds up internal interface map
   pub fn new(config: LnxConfig) -> LinkLayer {
     // build interface map

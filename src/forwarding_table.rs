@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::net::Ipv4Addr;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::interface::{Interface, State};
 use crate::ip_packet::IpPacket;
 use crate::protocol::Protocol;
 use crate::rip_message::{RipCommand, RipEntry, RipMsg, INFINITY_COST};
@@ -24,6 +25,7 @@ const SUBNET_MASK: u32 = u32::from_ne_bytes([255, 255, 255, 255]);
 pub struct ForwardingTable {
   table: InternalTable,
   neighbors: SharedInterfaceTable,
+  interface_map: Arc<RwLock<Vec<Interface>>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -36,17 +38,19 @@ pub struct RoutingEntry {
 impl ForwardingTable {
   pub fn new(
     ip_send_tx: Sender<IpSendMsg>,
-    neighbors: Vec<(Ipv4Addr, InterfaceId)>,
-    our_interfaces: Vec<(Ipv4Addr, InterfaceId)>,
+    our_interfaces: Arc<RwLock<Vec<Interface>>>,
   ) -> (ForwardingTable, HandlerFunction) {
     let mut forwarding_table = ForwardingTable::default();
-    *forwarding_table.table.lock().unwrap() = our_interfaces
+
+    forwarding_table.interface_map = our_interfaces;
+    let unlocked_interfaces = forwarding_table.interface_map.read().unwrap();
+    *forwarding_table.table.lock().unwrap() = unlocked_interfaces
       .iter()
-      .map(|&(addr, id)| {
+      .map(|interface| {
         (
-          addr,
+          interface.our_ip,
           RoutingEntry {
-            next_hop: id,
+            next_hop: interface.id,
             cost: 0,
             expiration_time: None,
           },
@@ -54,9 +58,18 @@ impl ForwardingTable {
       })
       .collect();
 
-    forwarding_table.neighbors = Arc::new(neighbors.into_iter().collect());
+    forwarding_table.neighbors = Arc::new(
+      unlocked_interfaces
+        .iter()
+        .map(|interface| (interface.their_ip, interface.id))
+        .collect(),
+    );
 
-    let our_interfaces_table = our_interfaces.into_iter().collect();
+    let our_interfaces_table = unlocked_interfaces
+      .iter()
+      .map(|interface| (interface.our_ip, interface.id))
+      .collect();
+    drop(unlocked_interfaces);
 
     ForwardingTable::start_reaper_thread(forwarding_table.table.clone());
 
@@ -164,15 +177,20 @@ impl ForwardingTable {
 
   /// Takes in a ip address and returns the interface to send the packet to
   pub fn get_next_hop(&self, ip: Ipv4Addr) -> Option<InterfaceId> {
-    let table = self.table.lock().unwrap();
-    if let Some(hop) = table.get(&ip) {
-      // don't leak the cost value
-      return Some(hop.next_hop);
-    }
-    drop(table);
+    if let Some(&interface) = self.neighbors.get(&ip) {
+      // This avoids the issue of not being able to rediscover a revived link
+      let unlocked_interfaces = self.interface_map.read().unwrap();
+      if unlocked_interfaces[interface].state() == State::UP {
+        return Some(interface);
+      }
+    };
 
-    // Also check if they are our neighbor
-    self.neighbors.get(&ip).cloned()
+    let table = self.table.lock().unwrap();
+    match table.get(&ip) {
+      // don't leak the cost value
+      Some(hop) => Some(hop.next_hop),
+      None => None,
+    }
   }
 
   pub fn start_send_keep_alive_thread(&self, ip_send_tx: Sender<IpSendMsg>) {
