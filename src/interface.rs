@@ -39,7 +39,11 @@ impl Interface {
     our_ip: Ipv4Addr,
     their_ip: Ipv4Addr,
   ) -> Result<Interface> {
-    let outgoing_link_addr = match outgoing_link.to_socket_addrs()?.next() {
+    let outgoing_link_addr = match outgoing_link
+      .to_socket_addrs()?
+      .filter(|a| a.is_ipv4())
+      .next()
+    {
       Some(addr) => addr,
       None => return Err(anyhow!("Invalid socket_addr: {outgoing_link}")),
     };

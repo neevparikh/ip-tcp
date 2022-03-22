@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::net::UdpSocket;
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 
 use anyhow::{anyhow, Result};
 
@@ -31,7 +31,12 @@ impl LnxConfig {
       ));
     }
 
-    let local_link = UdpSocket::bind(format!("{}:{}", tokens[0], tokens[1]))?;
+    // this is required because UdpSocket::bind by default converts "localhost:PORT" to
+    // ipv6 - [::1]:PORT
+    // ipv4 - [127.0.0.1]:PORT
+    // We only want ipv4, so we filter and pass in the rest into UdpSocket
+    let addr = (format!("{}:{}", tokens[0], tokens[1]).to_socket_addrs()?).filter(|a| a.is_ipv4());
+    let local_link = UdpSocket::bind(addr.collect::<Vec<SocketAddr>>().as_slice())?;
 
     let mut interfaces = Vec::new();
     for (i, line) in reader.lines().enumerate() {
