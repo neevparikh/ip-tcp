@@ -343,6 +343,10 @@ impl IpPacket {
 
     Ok(())
   }
+
+  pub(crate) fn source_address_set(&self) -> bool {
+    self.source_set
+  }
 }
 
 #[derive(Debug, PartialEq)]

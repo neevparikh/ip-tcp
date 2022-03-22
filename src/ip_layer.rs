@@ -157,7 +157,9 @@ impl IpLayer {
             }
             Some(id) => id,
           };
-          packet.set_source_address(link_layer.read().unwrap().get_our_ip(id).unwrap());
+          if !packet.source_address_set() {
+            packet.set_source_address(link_layer.read().unwrap().get_our_ip(id).unwrap());
+          }
           if let Err(_e) = link_send_tx.send((Some(id), packet.pack())) {
             edebug!("Connection dropped, exiting node send...");
             break;
