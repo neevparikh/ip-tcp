@@ -154,13 +154,16 @@ impl ForwardingTable {
 
             match table.get_mut(&addr) {
               Some(curr_route) => {
+                let different_cost = new_cost != curr_route.cost;
                 let not_us = !our_interfaces.contains_key(&addr);
                 let better_cost = new_cost < curr_route.cost;
                 let same_next_hop = curr_route.next_hop == new_routing_entry.next_hop;
                 debug_assert!(!(!not_us && better_cost));
                 if better_cost || (not_us && same_next_hop) {
                   *curr_route = new_routing_entry;
-                  updated_entries.insert(addr, new_routing_entry);
+                  if different_cost {
+                    updated_entries.insert(addr, new_routing_entry);
+                  }
                 }
               }
               None => {
@@ -244,38 +247,45 @@ impl ForwardingTable {
     let our_interfaces = self.our_interfaces.clone();
 
     thread::spawn(move || loop {
-      thread::sleep(Duration::from_millis(200));
+      thread::sleep(Duration::from_millis(20));
       let interfaces = interface_map.read().unwrap();
       let mut table = table.lock().unwrap();
       let now = Instant::now();
-      let updates = PartialTable::new();
+      let mut updated_entries = PartialTable::new();
       table
         .iter_mut()
         .for_each(|(addr, route_entry)| match our_interfaces.get(&addr) {
           Some(&interface_id) => {
             debug_assert!(interface_id == route_entry.next_hop);
+            let old_cost = route_entry.cost;
             if interfaces[interface_id].state() == State::UP {
               route_entry.cost = 0;
             } else {
               route_entry.cost = INFINITY_COST;
             }
+            if old_cost != route_entry.cost {
+              updated_entries.insert(*addr, *route_entry);
+            }
           }
           None => {
             // It is safe to unwrap because only routes to ourselves don't expire
-            if route_entry.expiration_time.unwrap() < now {
+            if route_entry.expiration_time.unwrap() < now && route_entry.cost < INFINITY_COST {
               route_entry.cost = INFINITY_COST;
+              updated_entries.insert(*addr, *route_entry);
             }
           }
         });
-      if let Err(e) = ForwardingTable::make_response_and_send_to_all(
-        &ip_send_tx,
-        &neighbors,
-        updates,
-        &our_interfaces,
-      ) {
-        edebug!("{}", e);
-        debug!("ip layer closed, exiting...");
-        break;
+      if updated_entries.len() > 0 {
+        if let Err(e) = ForwardingTable::make_response_and_send_to_all(
+          &ip_send_tx,
+          &neighbors,
+          updated_entries,
+          &our_interfaces,
+        ) {
+          edebug!("{}", e);
+          debug!("ip layer closed, exiting...");
+          break;
+        }
       }
     });
   }
