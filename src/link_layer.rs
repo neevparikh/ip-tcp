@@ -18,9 +18,10 @@ const MAX_SIZE: usize = 65536;
 
 pub type LinkSendMsg = (Option<InterfaceId>, IpPacket);
 pub type LinkRecvMsg = (InterfaceId, IpPacket);
+pub type SharedInterfaces = Arc<RwLock<Vec<Interface>>>;
 
 pub struct LinkLayer {
-  interfaces: Arc<RwLock<Vec<Interface>>>,
+  interfaces: SharedInterfaces,
   addr_to_id: Arc<HashMap<SocketAddr, InterfaceId>>,
   local_link: UdpSocket,
   closed: Arc<AtomicBool>,

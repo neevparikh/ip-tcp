@@ -9,71 +9,78 @@ use std::time::{Duration, Instant};
 
 use crate::interface::{Interface, State};
 use crate::ip_packet::IpPacket;
+use crate::link_layer::SharedInterfaces;
 use crate::protocol::Protocol;
 use crate::rip_message::{RipCommand, RipEntry, RipMsg, INFINITY_COST};
 use crate::{debug, edebug, HandlerFunction, InterfaceId, IpSendMsg};
 
 use anyhow::Result;
 
-type InternalTable = Arc<Mutex<BTreeMap<Ipv4Addr, RoutingEntry>>>;
 type PartialTable = BTreeMap<Ipv4Addr, RoutingEntry>;
-type InterfaceTable = BTreeMap<Ipv4Addr, InterfaceId>;
+type InternalTable = Arc<Mutex<PartialTable>>;
 type SharedInterfaceTable = Arc<BTreeMap<Ipv4Addr, InterfaceId>>;
 const SUBNET_MASK: u32 = u32::from_ne_bytes([255, 255, 255, 255]);
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ForwardingTable {
   table: InternalTable,
   neighbors: SharedInterfaceTable,
-  interface_map: Arc<RwLock<Vec<Interface>>>,
+  our_interfaces: SharedInterfaceTable,
+  interface_map: SharedInterfaces,
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct RoutingEntry {
-  next_hop: InterfaceId,
-  cost: u8,
+  pub next_hop: InterfaceId,
+  pub cost: u8,
   expiration_time: Option<Instant>,
 }
 
 impl ForwardingTable {
   pub fn new(
     ip_send_tx: Sender<IpSendMsg>,
-    our_interfaces: Arc<RwLock<Vec<Interface>>>,
-  ) -> (ForwardingTable, HandlerFunction) {
-    let mut forwarding_table = ForwardingTable::default();
+    interface_map: Arc<RwLock<Vec<Interface>>>,
+  ) -> (HandlerFunction, ForwardingTable) {
+    let unlocked_interfaces = interface_map.read().unwrap();
+    let table: InternalTable = Arc::new(Mutex::new(
+      unlocked_interfaces
+        .iter()
+        .map(|interface| {
+          (
+            interface.our_ip,
+            RoutingEntry {
+              next_hop: interface.id,
+              cost: 0,
+              expiration_time: None,
+            },
+          )
+        })
+        .collect(),
+    ));
 
-    forwarding_table.interface_map = our_interfaces;
-    let unlocked_interfaces = forwarding_table.interface_map.read().unwrap();
-    *forwarding_table.table.lock().unwrap() = unlocked_interfaces
-      .iter()
-      .map(|interface| {
-        (
-          interface.our_ip,
-          RoutingEntry {
-            next_hop: interface.id,
-            cost: 0,
-            expiration_time: None,
-          },
-        )
-      })
-      .collect();
-
-    forwarding_table.neighbors = Arc::new(
+    let neighbors: SharedInterfaceTable = Arc::new(
       unlocked_interfaces
         .iter()
         .map(|interface| (interface.their_ip, interface.id))
         .collect(),
     );
 
-    let our_interfaces_table = unlocked_interfaces
-      .iter()
-      .map(|interface| (interface.our_ip, interface.id))
-      .collect();
+    let our_interfaces: SharedInterfaceTable = Arc::new(
+      unlocked_interfaces
+        .iter()
+        .map(|interface| (interface.our_ip, interface.id))
+        .collect(),
+    );
     drop(unlocked_interfaces);
 
-    ForwardingTable::start_reaper_thread(forwarding_table.table.clone());
+    let forwarding_table = ForwardingTable {
+      table,
+      neighbors,
+      our_interfaces,
+      interface_map,
+    };
 
-    let rip_handler = forwarding_table.get_rip_handler(ip_send_tx.clone(), our_interfaces_table);
+    forwarding_table.start_reaper_thread(ip_send_tx.clone());
     forwarding_table.start_send_keep_alive_thread(ip_send_tx.clone());
 
     if let Err(_e) =
@@ -82,7 +89,10 @@ impl ForwardingTable {
       edebug!("Error in make_and_send_to_all");
     }
 
-    (forwarding_table, rip_handler)
+    (
+      forwarding_table.get_rip_handler(ip_send_tx.clone()),
+      forwarding_table,
+    )
   }
 
   pub fn get_table(&self) -> MutexGuard<BTreeMap<Ipv4Addr, RoutingEntry>> {
@@ -91,13 +101,10 @@ impl ForwardingTable {
 
   /// Returns the handler function which updates the forwarding table based off of
   /// RIP packets
-  pub fn get_rip_handler(
-    &self,
-    ip_send_tx: Sender<IpSendMsg>,
-    our_interfaces: InterfaceTable,
-  ) -> HandlerFunction {
+  pub fn get_rip_handler(&self, ip_send_tx: Sender<IpSendMsg>) -> HandlerFunction {
     let table = self.table.clone();
     let neighbors = self.neighbors.clone();
+    let our_interfaces = self.our_interfaces.clone();
 
     Box::new(move |ip_packet| {
       let mut table = table.lock().unwrap();
@@ -122,9 +129,12 @@ impl ForwardingTable {
         RipCommand::Request => {
           debug_assert!(rip_msg.entries.len() == 0);
           let table = table.clone();
-          if let Err(e) =
-            ForwardingTable::make_response_and_send_to_all(&ip_send_tx, neighbors.clone(), table)
-          {
+          if let Err(e) = ForwardingTable::make_response_and_send_to_all(
+            &ip_send_tx,
+            &neighbors,
+            table,
+            &our_interfaces,
+          ) {
             edebug!("{}", e);
             edebug!("Error in sending to all in rip handler");
           }
@@ -163,8 +173,9 @@ impl ForwardingTable {
           if updated_entries.len() > 0 {
             if let Err(e) = ForwardingTable::make_response_and_send_to_all(
               &ip_send_tx,
-              neighbors.clone(),
+              &neighbors,
               updated_entries,
+              &our_interfaces,
             ) {
               edebug!("{}", e);
               edebug!("Error in sending to all in rip handler");
@@ -177,32 +188,41 @@ impl ForwardingTable {
 
   /// Takes in a ip address and returns the interface to send the packet to
   pub fn get_next_hop(&self, ip: Ipv4Addr) -> Option<InterfaceId> {
-    if let Some(&interface) = self.neighbors.get(&ip) {
-      // This avoids the issue of not being able to rediscover a revived link
-      let unlocked_interfaces = self.interface_map.read().unwrap();
-      if unlocked_interfaces[interface].state() == State::UP {
-        return Some(interface);
+    match self.neighbors.get(&ip) {
+      Some(&interface) => {
+        // This avoids the issue of not being able to rediscover a revived link
+        let unlocked_interfaces = self.interface_map.read().unwrap();
+        if unlocked_interfaces[interface].state() == State::UP {
+          Some(interface)
+        } else {
+          None
+        }
       }
-    };
-
-    let table = self.table.lock().unwrap();
-    match table.get(&ip) {
-      // don't leak the cost value
-      Some(hop) => Some(hop.next_hop),
-      None => None,
+      None => {
+        let table = self.table.lock().unwrap();
+        match table.get(&ip) {
+          // don't leak the cost value
+          Some(hop) if hop.cost < INFINITY_COST => Some(hop.next_hop),
+          _ => None,
+        }
+      }
     }
   }
 
   pub fn start_send_keep_alive_thread(&self, ip_send_tx: Sender<IpSendMsg>) {
     let table = self.table.clone();
     let neighbors = self.neighbors.clone();
+    let our_interfaces = self.our_interfaces.clone();
     thread::spawn(move || {
       debug!("Starting keep alive thread");
       loop {
         let table = table.lock().unwrap().clone();
-        if let Err(e) =
-          ForwardingTable::make_response_and_send_to_all(&ip_send_tx, neighbors.clone(), table)
-        {
+        if let Err(e) = ForwardingTable::make_response_and_send_to_all(
+          &ip_send_tx,
+          &neighbors,
+          table,
+          &our_interfaces,
+        ) {
           edebug!("{}", e);
           debug!("IP layer send channel closed, exiting...");
           return;
@@ -217,21 +237,46 @@ impl ForwardingTable {
   ///
   /// Note: could do something smarter with a priority queue sorted by expiration times
   /// but I think that would be premature optimization.
-  fn start_reaper_thread(table: InternalTable) {
+  fn start_reaper_thread(&self, ip_send_tx: Sender<IpSendMsg>) {
+    let table = self.table.clone();
+    let interface_map = self.interface_map.clone();
+    let neighbors = self.neighbors.clone();
+    let our_interfaces = self.our_interfaces.clone();
+
     thread::spawn(move || loop {
       thread::sleep(Duration::from_millis(200));
+      let interfaces = interface_map.read().unwrap();
       let mut table = table.lock().unwrap();
       let now = Instant::now();
+      let updates = PartialTable::new();
       table
         .iter_mut()
-        .for_each(|(_k, v)| match v.expiration_time {
-          Some(t) => {
-            if t < now {
-              v.cost = INFINITY_COST;
+        .for_each(|(addr, route_entry)| match our_interfaces.get(&addr) {
+          Some(&interface_id) => {
+            debug_assert!(interface_id == route_entry.next_hop);
+            if interfaces[interface_id].state() == State::UP {
+              route_entry.cost = 0;
+            } else {
+              route_entry.cost = INFINITY_COST;
             }
           }
-          None => (),
+          None => {
+            // It is safe to unwrap because only routes to ourselves don't expire
+            if route_entry.expiration_time.unwrap() < now {
+              route_entry.cost = INFINITY_COST;
+            }
+          }
         });
+      if let Err(e) = ForwardingTable::make_response_and_send_to_all(
+        &ip_send_tx,
+        &neighbors,
+        updates,
+        &our_interfaces,
+      ) {
+        edebug!("{}", e);
+        debug!("ip layer closed, exiting...");
+        break;
+      }
     });
   }
 
@@ -255,8 +300,9 @@ impl ForwardingTable {
 
   fn make_response_and_send_to_all(
     ip_send_tx: &Sender<IpSendMsg>,
-    neighbors: SharedInterfaceTable,
+    neighbors: &SharedInterfaceTable,
     table: PartialTable,
+    our_interfaces: &SharedInterfaceTable,
   ) -> Result<()> {
     for (destination_address, interface_id) in neighbors.iter() {
       let mut rip_msg = RipMsg {
@@ -266,7 +312,8 @@ impl ForwardingTable {
       // I don't think there is a good way to avoid the double for loop
       for (curr_dest, route_entry) in table.iter() {
         // Poison reverse
-        let cost = if &route_entry.next_hop == interface_id && route_entry.cost != 0 {
+        let is_our_interface = our_interfaces.contains_key(&curr_dest);
+        let cost = if &route_entry.next_hop == interface_id && !is_our_interface {
           INFINITY_COST
         } else {
           route_entry.cost

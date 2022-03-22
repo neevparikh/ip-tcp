@@ -8,8 +8,6 @@ use crate::InterfaceId;
 pub enum State {
   UP,
   DOWN,
-  CLOSED,
-  ERRORED,
 }
 
 #[derive(Debug)]
@@ -64,14 +62,25 @@ impl Interface {
 
 impl fmt::Display for Interface {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(
-      f,
-      "{}: status {:?}, outgoing_link {}, their_ip {}, our_ip {}",
-      self.id,
-      self.state(),
-      self.outgoing_link,
-      self.their_ip,
-      self.our_ip
-    )
+    if cfg!(debug_assertions) {
+      write!(
+        f,
+        "{}: status {:?}, outgoing_link {}, their_ip {}, our_ip {}",
+        self.id,
+        self.state(),
+        self.outgoing_link,
+        self.their_ip,
+        self.our_ip
+      )
+    } else {
+      write!(
+        f,
+        "{}: status {:?}, their_ip {}, our_ip {}",
+        self.id,
+        self.state(),
+        self.their_ip,
+        self.our_ip
+      )
+    }
   }
 }
