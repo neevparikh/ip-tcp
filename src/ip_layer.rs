@@ -17,8 +17,8 @@ use crate::link_layer::LinkLayer;
 use crate::lnx_config::LnxConfig;
 use crate::protocol::Protocol;
 use crate::rip_message::INFINITY_COST;
-use crate::HandlerFunction;
-use crate::{debug, edebug};
+use crate::{debug, edebug, LinkSendMsg};
+use crate::{HandlerFunction, LinkRecvMsg};
 
 type HandlerMap = HashMap<Protocol, HandlerFunction>;
 pub type IpSendMsg = IpPacket;
@@ -86,14 +86,23 @@ impl IpLayer {
   }
 
   fn recv_thread(
-    link_recv_rx: Receiver<(usize, IpPacket)>,
+    link_recv_rx: Receiver<LinkRecvMsg>,
     handlers: Arc<Mutex<HandlerMap>>,
     our_ip_addrs: HashSet<Ipv4Addr>,
     ip_send_tx: Sender<IpSendMsg>,
   ) {
     loop {
       match link_recv_rx.recv() {
-        Ok((interface, mut packet)) => {
+        Ok((interface, bytes)) => {
+          let mut packet = match IpPacket::unpack(&bytes) {
+            Err(e) => {
+              edebug!("{}", e);
+              debug!("Warning: Malformed packet, dropping...");
+              continue;
+            }
+            Ok(p) => p,
+          };
+
           if our_ip_addrs.contains(&packet.destination_address()) {
             debug!(
               "packet dst {:?} ours, calling handle_packet...",
@@ -130,7 +139,7 @@ impl IpLayer {
 
   fn send_thread(
     ip_send_rx: Receiver<IpSendMsg>,
-    link_send_tx: Sender<(Option<usize>, IpPacket)>,
+    link_send_tx: Sender<LinkSendMsg>,
     table: Arc<ForwardingTable>,
     closed: Arc<AtomicBool>,
     link_layer: Arc<RwLock<LinkLayer>>,
@@ -149,7 +158,7 @@ impl IpLayer {
             Some(id) => id,
           };
           packet.set_source_address(link_layer.read().unwrap().get_our_ip(id).unwrap());
-          if let Err(_e) = link_send_tx.send((Some(id), packet)) {
+          if let Err(_e) = link_send_tx.send((Some(id), packet.pack())) {
             edebug!("Connection dropped, exiting node send...");
             break;
           }

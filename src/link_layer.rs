@@ -16,8 +16,8 @@ use crate::{debug, edebug, InterfaceId};
 
 const MAX_SIZE: usize = 65536;
 
-pub type LinkSendMsg = (Option<InterfaceId>, IpPacket);
-pub type LinkRecvMsg = (InterfaceId, IpPacket);
+pub type LinkSendMsg = (Option<InterfaceId>, Vec<u8>);
+pub type LinkRecvMsg = (InterfaceId, Vec<u8>);
 pub type SharedInterfaces = Arc<RwLock<Vec<Interface>>>;
 
 pub struct LinkLayer {
@@ -150,13 +150,13 @@ impl LinkLayer {
   ) -> Result<()> {
     loop {
       match link_send_rx.recv() {
-        Ok((id_opt, packet)) => {
+        Ok((id_opt, bytes)) => {
           let interfaces = interfaces.read().unwrap();
           let send_packet_to_id = |interface: &Interface| -> Result<()> {
             let dst_socket_addr = interface.outgoing_link_addr.clone();
             let state = interface.state().clone();
             if state == State::UP {
-              local_link.send_to(&packet.pack(), dst_socket_addr)?;
+              local_link.send_to(&bytes, dst_socket_addr)?;
             }
             Ok(())
           };
@@ -190,40 +190,26 @@ impl LinkLayer {
     let mut buf = [0u8; MAX_SIZE];
     loop {
       match local_link.recv_from(&mut buf) {
-        Ok((bytes_read, src)) => {
-          let packet = match IpPacket::unpack(&buf[..bytes_read]) {
-            Err(e) => {
-              edebug!("{}", e);
-              debug!("Warning: Malformed packet from {}, dropping...", src);
-              continue;
-            }
-            Ok(p) => p,
-          };
-          match addr_to_id.get(&src) {
-            None => {
-              debug!(
-                "Warning: Unknown source addr {}, local: {}, dropping...",
-                packet.source_address(),
-                src
-              );
-            }
-            Some(&id) => {
-              let interfaces = interfaces.read().unwrap();
-              let interface = &interfaces[id];
-              let state = interface.state().clone();
-              drop(interfaces);
-              if state == State::UP {
-                match link_recv_tx.send((id, packet)) {
-                  Ok(_) => (),
-                  Err(_e) => {
-                    debug!("Connection dropped, exiting...");
-                    break;
-                  }
+        Ok((bytes_read, src)) => match addr_to_id.get(&src) {
+          None => {
+            debug!("Warning: Unknown source local: {}, dropping...", src);
+          }
+          Some(&id) => {
+            let interfaces = interfaces.read().unwrap();
+            let interface = &interfaces[id];
+            let state = interface.state().clone();
+            drop(interfaces);
+            if state == State::UP {
+              match link_recv_tx.send((id, buf[..bytes_read].to_vec())) {
+                Ok(_) => (),
+                Err(_e) => {
+                  debug!("Connection dropped, exiting...");
+                  break;
                 }
               }
             }
           }
-        }
+        },
         Err(e) if e.kind() == ErrorKind::WouldBlock => {
           if closed.load(Ordering::SeqCst) {
             debug!("Connection dropped, exiting...");

@@ -29,9 +29,10 @@ Our abstraction is as follows:
   receiving responses from other nodes, as well as updating the table appropriately. We also send
   requests to neighbor nodes on initialization. 
 * In processing incoming packets, we first listen on the link layer channel, which sends received
-  link layer packets. If the packet is malformed, we drop it. If we get a packet meant for us, we
-  call the appropriate handler. If not, and the time to live is 0, we drop the packet. Otherwise, we
-  decrement the TTL and forward the packet using the forwarding table.
+  link layer packets (at this point it is still bytes). If the packet is malformed, we drop it. If
+  we get a packet meant for us, we call the appropriate handler. If not, and the time to live is 0,
+  we drop the packet. Otherwise, we decrement the TTL and forward the packet using the forwarding
+  table.
 
 ## Details
 
