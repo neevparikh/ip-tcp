@@ -60,7 +60,42 @@ fn parse_toggle_args(tokens: Vec<String>) -> Result<InterfaceId> {
 }
 
 fn run(mut ip_layer: IpLayer) -> Result<()> {
-  ip_layer.print_interfaces();
+  let help_msg = |bad_cmd: Option<&str>| {
+    if let Some(bad_cmd) = bad_cmd {
+      eprintln!("Unrecognized command {bad_cmd}, expected one of ");
+    }
+    eprintln!(
+      "Commands:
+a <port>                       - Spawn a socket, bind it to the given port, 
+                                 and start accepting connections on that port.
+c <ip> <port>                  - Attempt to connect to the given ip address,
+                                 in dot notation, on the given port.
+s <socket> <data>              - Send a string on a socket.
+r <socket> <numbytes> [y|n]    - Try to read data from a given socket. If
+                                 the last argument is y, then you should
+                                 block until numbytes is received, or the
+                                 connection closes. If n, then don.t block;
+                                 return whatever recv returns. Default is n.
+sf <filename> <ip> <port>      - Connect to the given ip and port, send the
+                                 entirety of the specified file, and close
+                                 the connection.
+rf <filename> <port>           - Listen for a connection on the given port.
+                                 Once established, write everything you can
+                                       read from the socket to the given file.
+                                 Once the other side closes the connection,
+                                 close the connection as well.
+sd <socket> [read|write|both]  - v_shutdown on the given socket.
+cl <socket>                    - v_close on the given socket.
+up <id>                        - enable interface with id
+down <id>                      - disable interface with id
+li, interfaces                 - list interfaces
+lr, routes                     - list routing table rows
+ls, sockets                    - list sockets (fd, ip, port, state)
+window <socket>                - lists window sizes for socket
+q, quit                        - exit
+h, help                        - show this help"
+    )
+  };
 
   loop {
     print!("> ");
@@ -87,10 +122,6 @@ fn run(mut ip_layer: IpLayer) -> Result<()> {
 
     let cmd = tokens[0].clone();
     match cmd.as_str() {
-      "send" => match parse_send_args(tokens) {
-        Ok((addr, protocol, data)) => ip_layer.send(addr, protocol, data)?,
-        Err(e) => eprintln!("Error: {e}"),
-      },
       "up" | "down" => match parse_toggle_args(tokens) {
         // we can unwrap, since the match ensures it's always a valid state
         Ok(id) => ip_layer
@@ -104,17 +135,18 @@ fn run(mut ip_layer: IpLayer) -> Result<()> {
       },
       "interfaces" | "li" => ip_layer.print_interfaces(),
       "routes" | "lr" => ip_layer.print_routes(),
-      "q" => break,
-      other => {
-        eprintln!(
-          concat!(
-            "Unrecognized command {}, expected one of ",
-            "[interfaces | li, routes | lr, q, down INT, ",
-            "up INT, send VIP PROTO STRING]"
-          ),
-          other
-        );
-      }
+      "sockets" | "ls" => todo!(),
+      "accept" | "a" => todo!(),
+      "connect" | "c" => todo!(),
+      "send" | "s" => todo!(),
+      "recv" | "r" => todo!(),
+      "shutdown" | "sd" => todo!(),
+      "close" | "cl" => todo!(),
+      "send_file" | "sf" => todo!(),
+      "recv_file" | "rf" => todo!(),
+      "quit" | "q" => break,
+      "help" | "h" => help_msg(None),
+      other => help_msg(Some(other)),
     }
   }
   Ok(())
