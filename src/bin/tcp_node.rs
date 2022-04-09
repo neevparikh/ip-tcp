@@ -1,11 +1,14 @@
 use std::io::{stdin, stdout, Write};
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use ip_tcp::ip::ip_layer::IpLayer;
 use ip_tcp::ip::protocol::Protocol;
 use ip_tcp::misc::lnx_config::LnxConfig;
+use ip_tcp::tcp::socket::{SocketId, SocketSide};
+use ip_tcp::tcp::tcp_layer::TcpLayer;
+use ip_tcp::tcp::Port;
 use ip_tcp::InterfaceId;
 use shellwords;
 
@@ -17,86 +20,160 @@ pub struct Args {
   lnx_filename: String,
 }
 
-fn parse_send_args(tokens: Vec<String>) -> Result<(Ipv4Addr, Protocol, Vec<u8>)> {
-  if tokens.len() != 4 {
-    return Err(anyhow!(
-      "'{}' expected 3 arguments received {}",
+fn check_len(tokens: &[String], expected: usize) -> Result<()> {
+  if tokens.len() != expected + 1 {
+    Err(anyhow!(
+      "'{}' expected {expected} argument received {}",
       tokens[0],
       tokens.len() - 1
-    ));
+    ))
+  } else {
+    Ok(())
   }
-  let their_ip: Ipv4Addr = match tokens[1].parse::<Ipv4Addr>() {
-    Ok(ip) => ip,
-    Err(_) => {
-      return Err(anyhow!("Failed to parse VIP"));
-    }
-  };
-  let protocol: Protocol = match tokens[2].parse::<u8>() {
-    Ok(protocol_num) => match Protocol::try_from(protocol_num) {
-      Ok(protocol) => protocol,
-      Err(e) => {
-        return Err(anyhow!("Failed to parse protocol, {e}"));
-      }
-    },
-    Err(_) => {
-      return Err(anyhow!("Failed to parse protocol, must be u8"));
-    }
-  };
-  Ok((their_ip, protocol, tokens[3].as_bytes().to_vec()))
 }
 
-fn parse_toggle_args(tokens: Vec<String>) -> Result<InterfaceId> {
-  if tokens.len() != 2 {
-    return Err(anyhow!(
-      "'{}' expected 1 argument received {}",
-      tokens[0],
-      tokens.len() - 1
-    ));
-  }
-
+fn parse_num<T>(tokens: Vec<String>) -> Result<T> {
+  check_len(&tokens, 1)?;
   tokens[1]
     .parse()
-    .map_err(|_| anyhow!("interface id must be positive int"))
+    .map_err(|_| anyhow!("single arg must be positive int"))
 }
 
-fn run(mut ip_layer: IpLayer) -> Result<()> {
-  let help_msg = |bad_cmd: Option<&str>| {
-    if let Some(bad_cmd) = bad_cmd {
-      eprintln!("Unrecognized command {bad_cmd}, expected one of ");
+fn parse_tcp_address(tokens: Vec<String>) -> Result<(Ipv4Addr, Port)> {
+  check_len(&tokens, 2)?;
+  Ok((tokens[1].parse()?, tokens[2].parse()?))
+}
+
+fn parse_send_args(tokens: Vec<String>) -> Result<(SocketId, Vec<u8>)> {
+  check_len(&tokens, 2)?;
+  Ok((tokens[1].parse()?, tokens[2..].as_bytes()))
+}
+
+fn parse_recv_args(tokens: Vec<String>) -> Result<(SocketId, usize, bool)> {
+  let block = if tokens.len() != 2 {
+    check_len(&tokens, 3)?;
+    match &tokens[3] {
+      "y" => true,
+      "n" => false,
+      s => return Err("unrecognized arg {s}, expected y|n"),
     }
-    eprintln!(
-      "Commands:
-a <port>                       - Spawn a socket, bind it to the given port, 
-                                 and start accepting connections on that port.
-c <ip> <port>                  - Attempt to connect to the given ip address,
-                                 in dot notation, on the given port.
-s <socket> <data>              - Send a string on a socket.
-r <socket> <numbytes> [y|n]    - Try to read data from a given socket. If
-                                 the last argument is y, then you should
-                                 block until numbytes is received, or the
-                                 connection closes. If n, then don.t block;
-                                 return whatever recv returns. Default is n.
-sf <filename> <ip> <port>      - Connect to the given ip and port, send the
-                                 entirety of the specified file, and close
-                                 the connection.
-rf <filename> <port>           - Listen for a connection on the given port.
-                                 Once established, write everything you can
-                                       read from the socket to the given file.
-                                 Once the other side closes the connection,
-                                 close the connection as well.
-sd <socket> [read|write|both]  - v_shutdown on the given socket.
-cl <socket>                    - v_close on the given socket.
-up <id>                        - enable interface with id
-down <id>                      - disable interface with id
-li, interfaces                 - list interfaces
-lr, routes                     - list routing table rows
-ls, sockets                    - list sockets (fd, ip, port, state)
-window <socket>                - lists window sizes for socket
-q, quit                        - exit
-h, help                        - show this help"
-    )
+  } else {
+    false
   };
 
+  Ok((tokens[1].parse()?, tokens[2].parse()?, block))
+}
+
+fn parse_shutdown_args(tokens: Vec<String>) -> Result<(SocketId, SocketSide)> {
+  let side = if tokens.len() != 1 {
+    check_len(&tokens, 2)?;
+    tokens[2].parse()?
+  } else {
+    SocketSide::Write
+  };
+  Ok((tokens[1].parse()?, side))
+}
+
+fn parse_send_file_args(tokens: Vec<String>) -> Result<(SocketId, Ipv4Addr, Port)> {
+  check_len(&tokens, 3)?;
+}
+
+fn parse_recv_file_args(tokens: Vec<String>) -> Result<(SocketId, Port)> {
+  check_len(&tokens, 2)?;
+}
+
+fn help_msg(bad_cmd: Option<&str>) {
+  if let Some(bad_cmd) = bad_cmd {
+    eprintln!("Unrecognized command {bad_cmd}, expected one of ");
+  }
+  eprintln!(
+    "Commands:
+a, accept <port>                          - Spawn a socket, bind it to the given port, 
+                                            and start accepting connections on that port.
+c, connect <ip> <port>                    - Attempt to connect to the given ip address,
+                                            in dot notation, on the given port.
+s, send <socket> <data>                   - Send a string on a socket.
+r, recv <socket> <numbytes> [y|n]         - Try to read data from a given socket. If
+                                            the last argument is y, then you should
+                                            block until numbytes is received, or the
+                                            connection closes. If n, then don't block;
+                                            return whatever recv returns. Default is n.
+sd, shutdown <socket> [read|write|both]   - v_shutdown on the given socket.
+cl, close <socket>                        - v_close on the given socket.
+
+
+sf, send_file <filename> <ip> <port>      - Connect to the given ip and port, send the
+                                            entirety of the specified file, and close
+                                            the connection.
+rf, recv_file <filename> <port>           - Listen for a connection on the given port.
+                                            Once established, write everything you can
+                                            read from the socket to the given file.
+                                            Once the other side closes the connection,
+                                            close the connection as well.
+
+li, interfaces                            - list interfaces
+lr, routes                                - list routing table rows
+ls, sockets                               - list sockets (fd, ip, port, state)
+lw, window <socket>                       - lists window sizes for socket
+
+up <id>                                   - enable interface with id
+down <id>                                 - disable interface with id
+
+q, quit                                   - exit
+h, help                                   - show this help"
+  )
+}
+
+fn parse(tokens: Vec<String>, ip_layer: &IpLayer, tcp_layer: &TcpLayer) -> Result<bool> {
+  let cmd = tokens[0].clone();
+  match cmd.as_str() {
+    // we can unwrap, since the match ensures it's always a valid state
+    "up" | "down" => ip_layer.toggle_interface(parse_num(tokens)?, cmd.parse().unwrap())?,
+
+    "interfaces" | "li" => ip_layer.print_interfaces(),
+    "routes" | "lr" => ip_layer.print_routes(),
+    "sockets" | "ls" => tcp_layer.print_sockets(),
+    "window" | "lw" => parse_num(tokens)?,
+
+    "accept" | "a" => parse_num(tokens)?,
+    "connect" | "c" => {
+      let (ip, port) = parse_tcp_address(tokens)?;
+      tcp_layer.connect(ip, port);
+    }
+    "send" | "s" => {
+      parse_send_args(tokens)?;
+      todo!();
+    }
+    "recv" | "r" => {
+      parse_recv_args(tokens)?;
+      todo!();
+    }
+    "shutdown" | "sd" => {
+      parse_shutdown_args(tokens)?;
+      todo!()
+    }
+    "close" | "cl" => {
+      parse_num(tokens)?;
+      todo!();
+    }
+
+    "send_file" | "sf" => {
+      parse_send_file_args(tokens)?;
+      todo!();
+    }
+    "recv_file" | "rf" => {
+      parse_recv_file_args(tokens)?;
+      todo!();
+    }
+
+    "quit" | "q" => return Ok(true),
+    "help" | "h" => help_msg(None),
+    other => help_msg(Some(other)),
+  }
+  Ok(false)
+}
+
+fn run(mut ip_layer: IpLayer, mut tcp_layer: TcpLayer) -> Result<()> {
   loop {
     print!("> ");
     stdout().flush()?;
@@ -120,33 +197,10 @@ h, help                        - show this help"
       }
     };
 
-    let cmd = tokens[0].clone();
-    match cmd.as_str() {
-      "up" | "down" => match parse_toggle_args(tokens) {
-        // we can unwrap, since the match ensures it's always a valid state
-        Ok(id) => ip_layer
-          .toggle_interface(id, cmd.parse().unwrap())
-          .unwrap_or_else(|e| {
-            eprintln!("Error: {e}");
-          }),
-        Err(e) => {
-          eprintln!("Error: {e}");
-        }
-      },
-      "interfaces" | "li" => ip_layer.print_interfaces(),
-      "routes" | "lr" => ip_layer.print_routes(),
-      "sockets" | "ls" => todo!(),
-      "accept" | "a" => todo!(),
-      "connect" | "c" => todo!(),
-      "send" | "s" => todo!(),
-      "recv" | "r" => todo!(),
-      "shutdown" | "sd" => todo!(),
-      "close" | "cl" => todo!(),
-      "send_file" | "sf" => todo!(),
-      "recv_file" | "rf" => todo!(),
-      "quit" | "q" => break,
-      "help" | "h" => help_msg(None),
-      other => help_msg(Some(other)),
+    match parse(tokens, &ip_layer, &tcp_layer) {
+      Ok(false) => (),
+      Ok(true) => break,
+      Err(e) => eprintln!("Error: {e}"),
     }
   }
   Ok(())
@@ -156,30 +210,8 @@ fn main() -> Result<()> {
   let args = Args::parse();
   let config = LnxConfig::new(&args.lnx_filename)?;
   let mut ip_layer = IpLayer::new(config);
-  ip_layer.register_handler(
-    Protocol::Test,
-    Box::new(|packet| {
-      let data = String::from_utf8(packet.data().to_vec());
-      if let Ok(s) = data {
-        println!(
-          concat!(
-            "Node received packet!\n",
-            "\tsource IP\t: {}\n",
-            "\tdestination IP\t: {}\n",
-            "\tprotocol\t: {}\n",
-            "\tpayload length\t: {}\n",
-            "\tpayload\t\t: {}\n",
-          ),
-          packet.source_address(),
-          packet.destination_address(),
-          packet.protocol(),
-          s.len(),
-          s
-        );
-      }
-    }),
-  );
-  run(ip_layer).map_err(|e| {
+  let mut tcp_layer = TcpLayer::new();
+  run(ip_layer, tcp_layer).map_err(|e| {
     eprintln!("Fatal error: {e}");
     eprintln!("exiting...");
     e

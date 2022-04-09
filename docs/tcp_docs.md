@@ -15,7 +15,7 @@ Milestone
 [x] clean up dir structure + tcp layer.rs
 [x] add another binary
 [x] get TCP header => etherparse
-[] TCP node repl
+[-] TCP node repl
 [] make socket API -> extend interface 
 [] understand state machine
     - function to deal
