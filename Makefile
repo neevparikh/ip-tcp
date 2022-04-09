@@ -1,7 +1,7 @@
 all: 
 	@echo "Building binaries"
 	cargo build --release
-	mv target/release/node ./
+	mv target/release/tcp_node ./node
 
 clean: 
 	rm ./node
