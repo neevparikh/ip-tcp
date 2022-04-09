@@ -1,20 +1,18 @@
-use std::cmp;
 use std::collections::BTreeMap;
-use std::fmt;
 use std::net::Ipv4Addr;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
-use std::thread;
 use std::time::{Duration, Instant};
-
-use crate::interface::{Interface, State};
-use crate::ip_packet::IpPacket;
-use crate::link_layer::SharedInterfaces;
-use crate::protocol::Protocol;
-use crate::rip_message::{RipCommand, RipEntry, RipMsg, INFINITY_COST};
-use crate::{debug, edebug, HandlerFunction, InterfaceId, IpSendMsg};
+use std::{cmp, fmt, thread};
 
 use anyhow::Result;
+
+use super::ip_packet::IpPacket;
+use super::protocol::Protocol;
+use super::rip_message::{RipCommand, RipEntry, RipMsg, INFINITY_COST};
+use crate::link::interface::{Interface, State};
+use crate::link::link_layer::SharedInterfaces;
+use crate::{debug, edebug, HandlerFunction, InterfaceId, IpSendMsg};
 
 type PartialTable = BTreeMap<Ipv4Addr, RoutingEntry>;
 type InternalTable = Arc<Mutex<PartialTable>>;
@@ -23,16 +21,16 @@ const SUBNET_MASK: u32 = u32::from_ne_bytes([255, 255, 255, 255]);
 
 #[derive(Debug)]
 pub struct ForwardingTable {
-  table: InternalTable,
-  neighbors: SharedInterfaceTable,
+  table:          InternalTable,
+  neighbors:      SharedInterfaceTable,
   our_interfaces: SharedInterfaceTable,
-  interface_map: SharedInterfaces,
+  interface_map:  SharedInterfaces,
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct RoutingEntry {
-  pub next_hop: InterfaceId,
-  pub cost: u8,
+  pub next_hop:    InterfaceId,
+  pub cost:        u8,
   expiration_time: Option<Instant>,
 }
 
@@ -49,8 +47,8 @@ impl ForwardingTable {
           (
             interface.our_ip,
             RoutingEntry {
-              next_hop: interface.id,
-              cost: 0,
+              next_hop:        interface.id,
+              cost:            0,
               expiration_time: None,
             },
           )
@@ -147,8 +145,8 @@ impl ForwardingTable {
             debug_assert!(entry.cost <= INFINITY_COST);
             let new_cost = cmp::min(entry.cost + 1, INFINITY_COST);
             let new_routing_entry = RoutingEntry {
-              cost: new_cost,
-              next_hop: source_interface,
+              cost:            new_cost,
+              next_hop:        source_interface,
               expiration_time: Some(Instant::now() + Duration::from_secs(12)),
             };
 

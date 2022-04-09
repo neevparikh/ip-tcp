@@ -4,7 +4,7 @@ use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 
 use anyhow::{anyhow, Result};
 
-use crate::interface::Interface;
+use crate::link::interface::Interface;
 
 #[derive(Debug)]
 pub struct LnxConfig {

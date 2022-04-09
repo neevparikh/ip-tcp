@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
-use crate::interface::{Interface, State};
-use crate::lnx_config::LnxConfig;
+use super::interface::{Interface, State};
+use crate::misc::lnx_config::LnxConfig;
 use crate::{debug, InterfaceId};
 
 const MAX_SIZE: usize = 65536;
@@ -20,10 +20,10 @@ pub type LinkRecvMsg = (InterfaceId, Vec<u8>);
 pub type SharedInterfaces = Arc<RwLock<Vec<Interface>>>;
 
 pub struct LinkLayer {
-  interfaces: SharedInterfaces,
-  addr_to_id: Arc<HashMap<SocketAddr, InterfaceId>>,
-  local_link: UdpSocket,
-  closed: Arc<AtomicBool>,
+  interfaces:  SharedInterfaces,
+  addr_to_id:  Arc<HashMap<SocketAddr, InterfaceId>>,
+  local_link:  UdpSocket,
+  closed:      Arc<AtomicBool>,
   recv_handle: Option<thread::JoinHandle<Result<()>>>,
 }
 
@@ -47,10 +47,10 @@ impl LinkLayer {
     }
 
     LinkLayer {
-      interfaces: Arc::new(RwLock::new(config.interfaces)),
-      addr_to_id: Arc::new(interface_id_by_their_addr),
-      local_link: config.local_link,
-      closed: Arc::new(AtomicBool::new(false)),
+      interfaces:  Arc::new(RwLock::new(config.interfaces)),
+      addr_to_id:  Arc::new(interface_id_by_their_addr),
+      local_link:  config.local_link,
+      closed:      Arc::new(AtomicBool::new(false)),
       recv_handle: None,
     }
   }

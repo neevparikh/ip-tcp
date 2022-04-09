@@ -8,26 +8,25 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
-use crate::forwarding_table::ForwardingTable;
-use crate::interface::State;
-use crate::ip_packet::IpPacket;
-use crate::link_layer::LinkLayer;
-use crate::lnx_config::LnxConfig;
-use crate::protocol::Protocol;
-use crate::rip_message::INFINITY_COST;
-use crate::{debug, edebug, InterfaceId, LinkSendMsg};
-use crate::{HandlerFunction, LinkRecvMsg};
+use super::forwarding_table::ForwardingTable;
+use super::ip_packet::IpPacket;
+use super::protocol::Protocol;
+use super::rip_message::INFINITY_COST;
+use crate::link::interface::State;
+use crate::link::link_layer::LinkLayer;
+use crate::misc::lnx_config::LnxConfig;
+use crate::{debug, edebug, HandlerFunction, InterfaceId, LinkRecvMsg, LinkSendMsg};
 
 type HandlerMap = HashMap<Protocol, HandlerFunction>;
 pub type IpSendMsg = IpPacket;
 
 pub struct IpLayer {
-  handlers: Arc<Mutex<HandlerMap>>,
-  link_layer: Arc<RwLock<LinkLayer>>,
-  closed: Arc<AtomicBool>,
+  handlers:    Arc<Mutex<HandlerMap>>,
+  link_layer:  Arc<RwLock<LinkLayer>>,
+  closed:      Arc<AtomicBool>,
   send_handle: Option<thread::JoinHandle<()>>,
-  ip_send_tx: Sender<IpSendMsg>,
-  table: Arc<ForwardingTable>,
+  ip_send_tx:  Sender<IpSendMsg>,
+  table:       Arc<ForwardingTable>,
 }
 
 impl IpLayer {
