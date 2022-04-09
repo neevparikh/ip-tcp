@@ -12,14 +12,14 @@ root.
 ## Design
 
 Milestone
-* clean up dir structure + tcp layer.rs
-* add another binary
-* get TCP header => etherparse
-* TCP node repl
-* make socket API -> extend interface 
-* understand state machine
+[x] clean up dir structure + tcp layer.rs
+[x] add another binary
+[x] get TCP header => etherparse
+[] TCP node repl
+[] make socket API -> extend interface 
+[] understand state machine
     - function to deal
     - switch case
 
 Bonus:
-* data structure for sliding window
+[] data structure for sliding window
