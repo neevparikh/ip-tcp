@@ -52,10 +52,10 @@ fn parse_send_args(tokens: Vec<String>) -> Result<(SocketId, Vec<u8>)> {
 fn parse_recv_args(tokens: Vec<String>) -> Result<(SocketId, usize, bool)> {
   let block = if tokens.len() != 2 {
     check_len(&tokens, 3)?;
-    match &tokens[3] {
+    match tokens[3].as_ref() {
       "y" => true,
       "n" => false,
-      s => return Err("unrecognized arg {s}, expected y|n"),
+      s => return Err(anyhow!("unrecognized arg {s}, expected y|n")),
     }
   } else {
     false
@@ -88,7 +88,7 @@ fn help_msg(bad_cmd: Option<&str>) {
   }
   eprintln!(
     "Commands:
-a, accept <port>                          - Spawn a socket, bind it to the given port, 
+a, accept <port>                          - Spawn a socket, bind it to the given port,
                                             and start accepting connections on that port.
 c, connect <ip> <port>                    - Attempt to connect to the given ip address,
                                             in dot notation, on the given port.
