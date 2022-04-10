@@ -1,6 +1,6 @@
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 
-use super::socket::SocketId;
+use super::socket::{SocketId, SocketSide};
 use super::Port;
 
 pub struct TcpLayer {}
@@ -26,19 +26,19 @@ impl TcpLayer {
     todo!()
   }
 
-  pub fn send() {
+  pub fn send(socket_id: SocketId, data: Vec<u8>) {
     todo!()
   }
 
-  pub fn recv() {
+  pub fn recv(socket_id: SocketId, numbytes: usize, should_block: bool) {
     todo!()
   }
 
-  pub fn shutdown() {
+  pub fn shutdown(socket_id: SocketId, shutdown_method: SocketSide) {
     todo!()
   }
 
-  pub fn close() {
+  pub fn close(socket_id: SocketId) {
     todo!()
   }
 

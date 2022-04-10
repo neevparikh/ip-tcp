@@ -76,10 +76,12 @@ fn parse_shutdown_args(tokens: Vec<String>) -> Result<(SocketId, SocketSide)> {
 
 fn parse_send_file_args(tokens: Vec<String>) -> Result<(SocketId, Ipv4Addr, Port)> {
   check_len(&tokens, 3)?;
+  Ok((tokens[1].parse()?, tokens[2].parse()?, tokens[3].parse()?))
 }
 
 fn parse_recv_file_args(tokens: Vec<String>) -> Result<(SocketId, Port)> {
   check_len(&tokens, 2)?;
+  Ok((tokens[1].parse()?, tokens[2].parse()?))
 }
 
 fn help_msg(bad_cmd: Option<&str>) {
@@ -141,29 +143,28 @@ fn parse(tokens: Vec<String>, ip_layer: &IpLayer, tcp_layer: &TcpLayer) -> Resul
       tcp_layer.connect(ip, port);
     }
     "send" | "s" => {
-      parse_send_args(tokens)?;
-      todo!();
+      let (socket_id, data) = parse_send_args(tokens);
+      tcp_layer.send(socket_id, data)?;
     }
     "recv" | "r" => {
-      parse_recv_args(tokens)?;
-      todo!();
+      let (socket_id, numbytes, should_block) = parse_recv_args(tokens)?;
+      tcp_layer.recv(socket_id, numbytes, should_block);
     }
     "shutdown" | "sd" => {
-      parse_shutdown_args(tokens)?;
-      todo!()
+      let (socket_id, shutdown_method) = parse_shutdown_args(tokens)?;
+      tcp_layer.shutdown(socket_id, shutdown_method);
     }
     "close" | "cl" => {
-      parse_num(tokens)?;
-      todo!();
+      tcp_layer.close(parse_num(tokens)?);
     }
 
     "send_file" | "sf" => {
-      parse_send_file_args(tokens)?;
-      todo!();
+      let (filename, ip, port) = parse_send_file_args(tokens)?;
+      tcp_layer.send_file(filename, ip, port);
     }
     "recv_file" | "rf" => {
-      parse_recv_file_args(tokens)?;
-      todo!();
+      let (filename, port) = parse_recv_file_args(tokens)?;
+      tcp_layer.send_file(filename, port);
     }
 
     "quit" | "q" => return Ok(true),
