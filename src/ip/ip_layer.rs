@@ -72,6 +72,11 @@ impl IpLayer {
     node
   }
 
+  /// Returns a channel which can be used by other protocols to pass messages down to the IP level
+  pub fn get_ip_send_tx(&self) -> Sender<IpSendMsg> {
+    self.ip_send_tx.clone()
+  }
+
   fn close(&mut self) {
     self.closed.store(true, Ordering::SeqCst);
     if let Some(handle) = self.send_handle.take() {

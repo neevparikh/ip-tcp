@@ -211,7 +211,7 @@ fn main() -> Result<()> {
   let args = Args::parse();
   let config = LnxConfig::new(&args.lnx_filename)?;
   let mut ip_layer = IpLayer::new(config);
-  let mut tcp_layer = TcpLayer::new();
+  let mut tcp_layer = TcpLayer::new(ip_layer.get_ip_send_tx());
   run(ip_layer, tcp_layer).map_err(|e| {
     eprintln!("Fatal error: {e}");
     eprintln!("exiting...");
