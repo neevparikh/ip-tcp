@@ -150,7 +150,7 @@ impl TcpStream {
     debug_assert!(self.destination_ip.is_some());
     // TODO: figure out best way to back header (making sure that checksum is calculated) and
     // combining it with data here
-    let ip_msg = IpPacket::new_with_defaults(self.destination_ip.unwrap(), Protocol::Tcp, data)?;
+    let ip_msg = IpPacket::new_with_defaults(self.destination_ip.unwrap(), Protocol::TCP, data)?;
     self.ip_send_tx.send(ip_msg)?;
     Ok(())
   }

@@ -5,7 +5,7 @@ use anyhow::{anyhow, Error, Result};
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum Protocol {
   Test,
-  Tcp,
+  TCP,
   RIP,
 }
 
@@ -20,7 +20,7 @@ impl TryFrom<u8> for Protocol {
   fn try_from(value: u8) -> Result<Protocol> {
     match value {
       0 => Ok(Protocol::Test),
-      6 => Ok(Protocol::Tcp),
+      6 => Ok(Protocol::TCP),
       200 => Ok(Protocol::RIP),
       other => Err(anyhow!("Unrecognized protocol number {other}")),
     }
@@ -31,7 +31,7 @@ impl Into<u8> for Protocol {
   fn into(self) -> u8 {
     match self {
       Protocol::Test => 0,
-      Protocol::Tcp => 6,
+      Protocol::TCP => 6,
       Protocol::RIP => 200,
     }
   }
