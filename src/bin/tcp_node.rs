@@ -1,5 +1,6 @@
 use std::io::{stdin, stdout, Write};
 use std::net::{Ipv4Addr, SocketAddr};
+use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -32,7 +33,7 @@ fn check_len(tokens: &[String], expected: usize) -> Result<()> {
   }
 }
 
-fn parse_num<T>(tokens: Vec<String>) -> Result<T> {
+fn parse_num<T: FromStr>(tokens: Vec<String>) -> Result<T> {
   check_len(&tokens, 1)?;
   tokens[1]
     .parse()
@@ -46,7 +47,7 @@ fn parse_tcp_address(tokens: Vec<String>) -> Result<(Ipv4Addr, Port)> {
 
 fn parse_send_args(tokens: Vec<String>) -> Result<(SocketId, Vec<u8>)> {
   check_len(&tokens, 2)?;
-  Ok((tokens[1].parse()?, tokens[2..].as_bytes()))
+  Ok((tokens[1].parse()?, tokens[2..].join(" ").into_bytes()))
 }
 
 fn parse_recv_args(tokens: Vec<String>) -> Result<(SocketId, usize, bool)> {
@@ -74,14 +75,14 @@ fn parse_shutdown_args(tokens: Vec<String>) -> Result<(SocketId, SocketSide)> {
   Ok((tokens[1].parse()?, side))
 }
 
-fn parse_send_file_args(tokens: Vec<String>) -> Result<(SocketId, Ipv4Addr, Port)> {
+fn parse_send_file_args(tokens: Vec<String>) -> Result<(String, Ipv4Addr, Port)> {
   check_len(&tokens, 3)?;
   Ok((tokens[1].parse()?, tokens[2].parse()?, tokens[3].parse()?))
 }
 
-fn parse_recv_file_args(tokens: Vec<String>) -> Result<(SocketId, Port)> {
+fn parse_recv_file_args(tokens: Vec<String>) -> Result<(String, Port)> {
   check_len(&tokens, 2)?;
-  Ok((tokens[1].parse()?, tokens[2].parse()?))
+  Ok((tokens[1].clone(), tokens[2].parse()?))
 }
 
 fn help_msg(bad_cmd: Option<&str>) {
@@ -126,7 +127,7 @@ h, help                                   - show this help"
   )
 }
 
-fn parse(tokens: Vec<String>, ip_layer: &IpLayer, tcp_layer: &TcpLayer) -> Result<bool> {
+fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) -> Result<bool> {
   let cmd = tokens[0].clone();
   match cmd.as_str() {
     // we can unwrap, since the match ensures it's always a valid state
@@ -135,16 +136,16 @@ fn parse(tokens: Vec<String>, ip_layer: &IpLayer, tcp_layer: &TcpLayer) -> Resul
     "interfaces" | "li" => ip_layer.print_interfaces(),
     "routes" | "lr" => ip_layer.print_routes(),
     "sockets" | "ls" => tcp_layer.print_sockets(),
-    "window" | "lw" => parse_num(tokens)?,
+    "window" | "lw" => (),
 
-    "accept" | "a" => parse_num(tokens)?,
+    "accept" | "a" => tcp_layer.accept(parse_num(tokens)?),
     "connect" | "c" => {
       let (ip, port) = parse_tcp_address(tokens)?;
       tcp_layer.connect(ip, port);
     }
     "send" | "s" => {
-      let (socket_id, data) = parse_send_args(tokens);
-      tcp_layer.send(socket_id, data)?;
+      let (socket_id, data) = parse_send_args(tokens)?;
+      tcp_layer.send(socket_id, data);
     }
     "recv" | "r" => {
       let (socket_id, numbytes, should_block) = parse_recv_args(tokens)?;
@@ -164,7 +165,7 @@ fn parse(tokens: Vec<String>, ip_layer: &IpLayer, tcp_layer: &TcpLayer) -> Resul
     }
     "recv_file" | "rf" => {
       let (filename, port) = parse_recv_file_args(tokens)?;
-      tcp_layer.send_file(filename, port);
+      tcp_layer.recv_file(filename, port);
     }
 
     "quit" | "q" => return Ok(true),
@@ -198,7 +199,7 @@ fn run(mut ip_layer: IpLayer, mut tcp_layer: TcpLayer) -> Result<()> {
       }
     };
 
-    match parse(tokens, &ip_layer, &tcp_layer) {
+    match parse(tokens, &mut ip_layer, &mut tcp_layer) {
       Ok(false) => (),
       Ok(true) => break,
       Err(e) => eprintln!("Error: {e}"),
@@ -210,8 +211,8 @@ fn run(mut ip_layer: IpLayer, mut tcp_layer: TcpLayer) -> Result<()> {
 fn main() -> Result<()> {
   let args = Args::parse();
   let config = LnxConfig::new(&args.lnx_filename)?;
-  let mut ip_layer = IpLayer::new(config);
-  let mut tcp_layer = TcpLayer::new(ip_layer.get_ip_send_tx());
+  let ip_layer = IpLayer::new(config);
+  let tcp_layer = TcpLayer::new(ip_layer.get_ip_send_tx());
   run(ip_layer, tcp_layer).map_err(|e| {
     eprintln!("Fatal error: {e}");
     eprintln!("exiting...");

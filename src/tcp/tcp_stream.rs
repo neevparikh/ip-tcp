@@ -1,18 +1,20 @@
-use std::sync::mpsc::{self, Receiver, Sender}
 use std::net::Ipv4Addr;
+use std::sync::mpsc::{self, Receiver, Sender};
 
+use anyhow::Result;
 use etherparse::TcpHeader;
 use rand::random;
 
 use super::{Port, TcpPacket};
 use crate::ip::protocol::Protocol;
-use crate::{IpSendMsg, IpPacket};
+use crate::{IpPacket, IpSendMsg};
 
 const TCP_BUF_SIZE: usize = u16::max_value() as usize;
 const MAX_WINDOW_SIZE: u16 = u16::max_value();
 
+#[derive(Debug, PartialEq)]
 enum TcpStreamState {
-  /// TODO: should we have this RFC describes CLOSED as a fictitious state
+  /// TODO: should we have this, RFC describes CLOSED as a fictitious state
   Closed,
   Listen,
   SynReceived,
@@ -78,6 +80,7 @@ impl TcpStream {
       recv_tx,
     )
   }
+
   pub fn new_listener(
     source_port: Port,
     ip_send_tx: Sender<IpSendMsg>,
@@ -91,7 +94,7 @@ impl TcpStream {
     destination_port: Port,
     ip_send_tx: Sender<IpSendMsg>,
   ) -> (TcpStream, Sender<TcpPacket>) {
-    let (new_stream, recv_tx) = TcpStream::new(
+    let (mut new_stream, recv_tx) = TcpStream::new(
       source_port,
       Some(destination_ip),
       Some(destination_port),
@@ -103,7 +106,11 @@ impl TcpStream {
     (new_stream, recv_tx)
   }
 
-  fn send_syn(&self, destination_ip: Ipv4Addr, destination_port: Port) -> Result<()> {
+  fn start_listen_thread(&self) {
+    todo!();
+  }
+
+  fn send_syn(&mut self, destination_ip: Ipv4Addr, destination_port: Port) -> Result<()> {
     debug_assert_state_valid(
       &self.state,
       vec![TcpStreamState::Closed, TcpStreamState::Listen],
@@ -111,7 +118,7 @@ impl TcpStream {
 
     self.set_destination_or_check(destination_ip, destination_port);
 
-    let msg = self.get_default_tcp_header();
+    let mut msg = self.get_default_tcp_header();
     msg.syn = true;
 
     let ip_msg = IpPacket::new_with_defaults(destination_ip, Protocol::Tcp, &[])?;
@@ -120,7 +127,7 @@ impl TcpStream {
     Ok(())
   }
 
-  fn send_syn_ack(&self, destination_ip: Ipv4Addr, destination_port: Port) -> Result<()> {
+  fn send_syn_ack(&mut self, destination_ip: Ipv4Addr, destination_port: Port) -> Result<()> {
     debug_assert_state_valid(
       &self.state,
       vec![TcpStreamState::Listen, TcpStreamState::SynSent],
@@ -128,7 +135,7 @@ impl TcpStream {
 
     self.set_destination_or_check(destination_ip, destination_port);
 
-    let msg = self.get_default_tcp_header();
+    let mut msg = self.get_default_tcp_header();
     msg.syn = true;
     msg.ack = true;
     msg.sequence_number = self.initial_sequence_number;
@@ -140,7 +147,10 @@ impl TcpStream {
   }
 
   fn send_tcp_packet(&self, header: TcpHeader, data: &[u8]) -> Result<()> {
-    let ip_msg = IpPacket::new_with_defaults(destination_ip, Protocol::Tcp, data)?;
+    debug_assert!(self.destination_ip.is_some());
+    // TODO: figure out best way to back header (making sure that checksum is calculated) and
+    // combining it with data here
+    let ip_msg = IpPacket::new_with_defaults(self.destination_ip.unwrap(), Protocol::Tcp, data)?;
     self.ip_send_tx.send(ip_msg)?;
     Ok(())
   }
@@ -157,7 +167,7 @@ impl TcpStream {
 
   /// If destination_ip is None then we set both fields, otherwise assert that
   /// the values were already set correctly
-  fn set_destination_or_check(&self, destination_ip: Ipv4Addr, destination_port: Port) {
+  fn set_destination_or_check(&mut self, destination_ip: Ipv4Addr, destination_port: Port) {
     match self.destination_ip {
       Some(ip) => {
         debug_assert!(ip == destination_ip);
@@ -170,7 +180,6 @@ impl TcpStream {
         self.destination_port = Some(destination_port);
       }
     }
-
   }
 }
 

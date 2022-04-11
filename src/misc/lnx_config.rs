@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 
 use crate::link::interface::Interface;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LnxConfig {
   /// UdpSocket to recv incoming messages on
   pub local_link: UdpSocket,
