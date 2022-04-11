@@ -62,7 +62,8 @@ impl TcpLayer {
   pub fn connect(&self, ip: Ipv4Addr, port: Port) {
     // TODO: should keep track of availible ports and assign source port from there
     let source_port = 1024;
-    let stream = TcpStream::new_connect(source_port, ip, port, self.ip_send_tx.clone());
+    // TODO: pass error back up?
+    let stream = TcpStream::new_connect(source_port, ip, port, self.ip_send_tx.clone()).unwrap();
     self.streams.write().unwrap().push(stream);
   }
 

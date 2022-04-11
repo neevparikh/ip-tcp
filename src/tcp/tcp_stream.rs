@@ -51,6 +51,7 @@ pub struct TcpStream {
   send_buffer: [u8; TCP_BUF_SIZE],
 
   /// TODO: how should commands like SHUTDOWN and CLOSE be passed
+  /// Selecting???
   recv_rx:    Receiver<TcpPacket>,
   ip_send_tx: Sender<IpSendMsg>,
 }
@@ -71,7 +72,7 @@ impl TcpStream {
         destination_port,
         initial_sequence_number: random(),
         initial_ack: None,
-        state: TcpStreamState::Listen,
+        state: initial_state,
         recv_buffer: [0u8; TCP_BUF_SIZE],
         send_buffer: [0u8; TCP_BUF_SIZE],
         recv_rx,
@@ -93,7 +94,7 @@ impl TcpStream {
     destination_ip: Ipv4Addr,
     destination_port: Port,
     ip_send_tx: Sender<IpSendMsg>,
-  ) -> (TcpStream, Sender<TcpPacket>) {
+  ) -> Result<(TcpStream, Sender<TcpPacket>)> {
     let (mut new_stream, recv_tx) = TcpStream::new(
       source_port,
       Some(destination_ip),
@@ -102,8 +103,8 @@ impl TcpStream {
       ip_send_tx,
     );
 
-    new_stream.send_syn(destination_ip, destination_port);
-    (new_stream, recv_tx)
+    new_stream.send_syn(destination_ip, destination_port)?;
+    Ok((new_stream, recv_tx))
   }
 
   fn start_listen_thread(&self) {
@@ -121,8 +122,7 @@ impl TcpStream {
     let mut msg = self.get_default_tcp_header();
     msg.syn = true;
 
-    let ip_msg = IpPacket::new_with_defaults(destination_ip, Protocol::Tcp, &[])?;
-    self.ip_send_tx.send(ip_msg)?;
+    self.send_tcp_packet(msg, &[])?;
     self.state = TcpStreamState::SynSent;
     Ok(())
   }
