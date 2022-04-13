@@ -5,11 +5,11 @@ use std::sync::{Arc, RwLock};
 use etherparse::TcpHeader;
 
 use super::socket::{SocketId, SocketSide};
-use super::tcp_stream::TcpStream;
+use super::tcp_stream::{LockedTcpStream, TcpStream};
 use super::{Port, TcpPacket};
 use crate::{edebug, HandlerFunction, IpSendMsg};
 
-type StreamMap = Arc<RwLock<Vec<(TcpStream, Sender<TcpPacket>)>>>;
+type StreamMap = Arc<RwLock<Vec<(LockedTcpStream, Sender<TcpPacket>)>>>;
 
 pub struct TcpLayer {
   ip_send_tx: Sender<IpSendMsg>,
@@ -31,7 +31,7 @@ impl TcpLayer {
     let streams = self.streams.clone();
 
     Box::new(move |ip_packet| {
-      let (tcp_header, tcp_data) = match TcpHeader::from_slice(ip_packet.data()) {
+      let (tcp_header, tcp_data) = match TcpHeader::from_slice(dbg!(ip_packet.data())) {
         Ok((header, data)) => (header, data),
         // Drop in the case of a parsing error
         Err(e) => {
@@ -55,15 +55,15 @@ impl TcpLayer {
   }
 
   pub fn accept(&self, port: Port) {
-    let stream = TcpStream::new_listener(port, self.ip_send_tx.clone());
+    let stream = TcpStream::listen(port, self.ip_send_tx.clone());
     self.streams.write().unwrap().push(stream);
   }
 
   pub fn connect(&self, ip: Ipv4Addr, port: Port) {
-    // TODO: should keep track of availible ports and assign source port from there
+    // TODO: should keep track of available ports and assign source port from there
     let source_port = 1024;
     // TODO: pass error back up?
-    let stream = TcpStream::new_connect(source_port, ip, port, self.ip_send_tx.clone()).unwrap();
+    let stream = TcpStream::connect(source_port, ip, port, self.ip_send_tx.clone()).unwrap();
     self.streams.write().unwrap().push(stream);
   }
 
