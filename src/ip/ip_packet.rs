@@ -139,6 +139,10 @@ impl IpPacket {
     return res;
   }
 
+  pub fn header(&self) -> &[u8] {
+    &self.header
+  }
+
   pub fn data(&self) -> &[u8] {
     &self.data
   }

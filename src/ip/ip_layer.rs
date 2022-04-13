@@ -18,14 +18,13 @@ use crate::misc::lnx_config::LnxConfig;
 use crate::{debug, edebug, HandlerFunction, InterfaceId, LinkRecvMsg, LinkSendMsg};
 
 type HandlerMap = HashMap<Protocol, HandlerFunction>;
-pub type IpSendMsg = IpPacket;
 
 pub struct IpLayer {
   handlers:    Arc<Mutex<HandlerMap>>,
   link_layer:  Arc<RwLock<LinkLayer>>,
   closed:      Arc<AtomicBool>,
   send_handle: Option<thread::JoinHandle<()>>,
-  ip_send_tx:  Sender<IpSendMsg>,
+  ip_send_tx:  Sender<IpPacket>,
   table:       Arc<ForwardingTable>,
 }
 
@@ -73,7 +72,7 @@ impl IpLayer {
   }
 
   /// Returns a channel which can be used by other protocols to pass messages down to the IP level
-  pub fn get_ip_send_tx(&self) -> Sender<IpSendMsg> {
+  pub fn get_ip_send_tx(&self) -> Sender<IpPacket> {
     self.ip_send_tx.clone()
   }
 
@@ -91,7 +90,7 @@ impl IpLayer {
     link_recv_rx: Receiver<LinkRecvMsg>,
     handlers: Arc<Mutex<HandlerMap>>,
     our_ip_addrs: HashSet<Ipv4Addr>,
-    ip_send_tx: Sender<IpSendMsg>,
+    ip_send_tx: Sender<IpPacket>,
   ) {
     loop {
       match link_recv_rx.recv() {
@@ -140,7 +139,7 @@ impl IpLayer {
   }
 
   fn send_thread(
-    ip_send_rx: Receiver<IpSendMsg>,
+    ip_send_rx: Receiver<IpPacket>,
     link_send_tx: Sender<LinkSendMsg>,
     table: Arc<ForwardingTable>,
     closed: Arc<AtomicBool>,
