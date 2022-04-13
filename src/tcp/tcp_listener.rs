@@ -1,28 +1,26 @@
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::sync::mpsc::Sender;
 
 use anyhow::Result;
 
 use super::tcp_stream::{LockedTcpStream, TcpStream};
-use super::{Port, TcpPacket};
-use crate::IpSendMsg;
+use super::Port;
+use crate::IpPacket;
 
 pub struct TcpListener {
-  stream:       LockedTcpStream,
-  port:         Port,
-  ip_send_tx:   Sender<IpSendMsg>,
-  _tcp_send_tx: Sender<TcpPacket>,
+  stream:     LockedTcpStream,
+  port:       Port,
+  ip_send_tx: Sender<IpPacket>,
 }
 
 impl TcpListener {
-  pub fn bind(port: Port, ip_send_tx: Sender<IpSendMsg>) -> TcpListener {
+  pub fn bind(port: Port, ip_send_tx: Sender<IpPacket>) -> TcpListener {
     // TODO return a Result<> and don't accept when already bound
-    let (stream, _tcp_send_tx) = TcpStream::listen(port, ip_send_tx.clone());
+    let stream = TcpStream::listen(port, ip_send_tx.clone());
     TcpListener {
       stream,
       port,
       ip_send_tx,
-      _tcp_send_tx,
     }
   }
 

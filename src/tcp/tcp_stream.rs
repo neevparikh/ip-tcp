@@ -1,23 +1,23 @@
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::{thread, vec};
 
 use anyhow::Result;
 use etherparse::TcpHeader;
 use rand::random;
 
-use super::{Port, TcpPacket};
+use super::{IpTcpPacket, Port};
 use crate::ip::protocol::Protocol;
-use crate::{debug, edebug, IpPacket, IpSendMsg};
+use crate::{debug, edebug, IpPacket};
 
 const TCP_BUF_SIZE: usize = u16::max_value() as usize;
 const MAX_WINDOW_SIZE: u16 = u16::max_value();
 
 pub type LockedTcpStream = Arc<Mutex<TcpStream>>;
 
-#[derive(Debug, PartialEq)]
-enum TcpStreamState {
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum TcpStreamState {
   /// TODO: should we have this, RFC describes CLOSED as a fictitious state
   Closed,
   Listen,
@@ -30,6 +30,7 @@ enum TcpStreamState {
   Closing,
 }
 
+#[derive(Debug)]
 pub struct TcpStream {
   /// Constant properties of the stream
   source_port:             u16,
@@ -57,20 +58,20 @@ pub struct TcpStream {
 
   /// TODO: how should commands like SHUTDOWN and CLOSE be passed
   /// Selecting???
-  // can't be in this, double check with Thomas
-  // tcp_recv_rx: Receiver<TcpPacket>,
-  ip_send_tx: Sender<IpSendMsg>,
+  stream_tx:  Sender<IpTcpPacket>, // thing for others to send this stream a packet
+  ip_send_tx: Sender<IpPacket>,
 }
 
 impl TcpStream {
   fn new(
+    // TODO, do we need this? source_ip: Ipv4Addr,
     source_port: Port,
     destination_ip: Option<Ipv4Addr>,
     destination_port: Option<Port>,
     initial_state: TcpStreamState,
-    ip_send_tx: Sender<IpSendMsg>,
-  ) -> (LockedTcpStream, Sender<TcpPacket>) {
-    let (tcp_recv_tx, tcp_recv_rx) = mpsc::channel();
+    ip_send_tx: Sender<IpPacket>,
+  ) -> LockedTcpStream {
+    let (stream_tx, stream_rx) = mpsc::channel();
 
     let stream = Arc::new(Mutex::new(TcpStream {
       source_port,
@@ -81,17 +82,26 @@ impl TcpStream {
       state: initial_state,
       recv_buffer: [0u8; TCP_BUF_SIZE],
       send_buffer: [0u8; TCP_BUF_SIZE],
+      stream_tx,
       ip_send_tx,
     }));
 
-    TcpStream::start_listen_thread(stream.clone(), tcp_recv_rx);
-    (stream, tcp_recv_tx)
+    TcpStream::start_listen_thread(stream.clone(), stream_rx);
+    stream
   }
 
-  pub fn listen(
-    source_port: Port,
-    ip_send_tx: Sender<IpSendMsg>,
-  ) -> (LockedTcpStream, Sender<TcpPacket>) {
+  pub fn destination(&self) -> Option<SocketAddr> {
+    match self.destination_ip.zip(self.destination_port) {
+      Some(ip_port) => Some(ip_port.into()),
+      None => None,
+    }
+  }
+
+  pub fn get_source_port(&self) -> Port {
+    self.source_port
+  }
+
+  pub fn listen(source_port: Port, ip_send_tx: Sender<IpPacket>) -> LockedTcpStream {
     TcpStream::new(source_port, None, None, TcpStreamState::Listen, ip_send_tx)
   }
 
@@ -99,9 +109,9 @@ impl TcpStream {
     source_port: Port,
     destination_ip: Ipv4Addr,
     destination_port: Port,
-    ip_send_tx: Sender<IpSendMsg>,
-  ) -> Result<(LockedTcpStream, Sender<TcpPacket>)> {
-    let (mut new_stream, recv_tx) = TcpStream::new(
+    ip_send_tx: Sender<IpPacket>,
+  ) -> Result<LockedTcpStream> {
+    let new_stream = TcpStream::new(
       source_port,
       Some(destination_ip),
       Some(destination_port),
@@ -113,26 +123,36 @@ impl TcpStream {
       .lock()
       .unwrap()
       .send_syn(destination_ip, destination_port)?;
-    Ok((new_stream, recv_tx))
+
+    Ok(new_stream)
   }
 
-  fn start_listen_thread(tcp_stream: Arc<Mutex<TcpStream>>, tcp_recv_rx: Receiver<TcpPacket>) {
+  /// Called by TcpLayer when it receives a packet for this stream, sends to listen thread to
+  /// process
+  pub fn process(&mut self, packet: IpTcpPacket) -> Result<()> {
+    self.stream_tx.send(packet)?;
+    Ok(())
+  }
+
+  fn start_listen_thread(tcp_stream: LockedTcpStream, stream_rx: Receiver<IpTcpPacket>) {
     thread::spawn(move || loop {
       // TODO: should this be timeout
-      match tcp_recv_rx.recv() {
-        Ok((packet, _data)) => {
+      match stream_rx.recv() {
+        Ok((ip_header, tcp_header, _data)) => {
           let mut stream = tcp_stream.lock().unwrap();
           match stream.state {
             TcpStreamState::Listen => {
-              if packet.syn {
+              if tcp_header.syn {
                 // TODO: or should this be packet.destination_ip?
-                // TODO: what to do in the case that you can't send the syn_ack??
-                let ip = stream.destination_ip.unwrap();
-                let port = stream.destination_port.unwrap();
+                let ip: Ipv4Addr = ip_header.source.into();
+                let port = tcp_header.source_port;
+
+                stream.set_initial_ack(tcp_header.sequence_number);
                 match stream.send_syn_ack(ip, port) {
                   Ok(()) => {
                     stream.state = TcpStreamState::SynReceived;
                   }
+                  // TODO: what to do in the case that you can't send the syn_ack??
                   Err(e) => edebug!("Could not send syn_ack? {e}"),
                 }
               }
@@ -140,23 +160,25 @@ impl TcpStream {
             TcpStreamState::SynReceived => {
               // TODO: check packet.acknowledgment_number and where to keep track of current ack?
               // Needs sliding window??
-              if packet.ack {
+              if tcp_header.ack {
                 stream.state = TcpStreamState::Established;
               }
             }
             TcpStreamState::SynSent => {
               // TODO: or should this be packet.destination_ip?
               // TODO: what to do in the case that you can't send the syn_ack??
-              let ip = stream.destination_ip.unwrap();
-              let port = stream.destination_port.unwrap();
-              if packet.ack && packet.syn {
+              let ip: Ipv4Addr = ip_header.source.into();
+              let port = tcp_header.source_port;
+              if tcp_header.ack && tcp_header.syn {
+                stream.set_initial_ack(tcp_header.sequence_number);
                 match stream.send_ack(ip, port) {
                   Ok(()) => {
                     stream.state = TcpStreamState::Established;
                   }
                   Err(e) => edebug!("could not send ack? {e}"),
                 }
-              } else if packet.syn && !packet.ack {
+              } else if tcp_header.syn && !tcp_header.ack {
+                stream.set_initial_ack(tcp_header.sequence_number);
                 match stream.send_ack(ip, port) {
                   Ok(()) => {
                     stream.state = TcpStreamState::SynReceived;
@@ -175,6 +197,7 @@ impl TcpStream {
         }
         Err(_e) => {
           debug!("Exiting...");
+          break;
         }
       }
     });
@@ -188,7 +211,7 @@ impl TcpStream {
 
     self.set_destination_or_check(destination_ip, destination_port);
 
-    let mut msg = self.get_default_tcp_header();
+    let mut msg = self.make_default_tcp_header();
     msg.syn = true;
 
     self.send_tcp_packet(msg, &[])?;
@@ -204,7 +227,7 @@ impl TcpStream {
 
     self.set_destination_or_check(destination_ip, destination_port);
 
-    let mut msg = self.get_default_tcp_header();
+    let mut msg = self.make_default_tcp_header();
     msg.syn = true;
     msg.ack = true;
     msg.sequence_number = self.initial_sequence_number;
@@ -228,7 +251,7 @@ impl TcpStream {
 
     self.set_destination_or_check(destination_ip, destination_port);
 
-    let mut msg = self.get_default_tcp_header();
+    let mut msg = self.make_default_tcp_header();
     msg.ack = true;
     // TODO: fix this, this is wrong
     msg.sequence_number = self.initial_sequence_number;
@@ -240,14 +263,16 @@ impl TcpStream {
 
   fn send_tcp_packet(&self, header: TcpHeader, data: &[u8]) -> Result<()> {
     debug_assert!(self.destination_ip.is_some());
-    // TODO: figure out best way to back header (making sure that checksum is calculated) and
-    // combining it with data here
-    let ip_msg = IpPacket::new_with_defaults(self.destination_ip.unwrap(), Protocol::TCP, data)?;
+    // TODO: figure out best way to pack header (making sure that checksum is calculated)
+    let mut header_buf = Vec::new();
+    header.write(&mut header_buf)?;
+    let data = [&header_buf, data].concat();
+    let ip_msg = IpPacket::new_with_defaults(self.destination_ip.unwrap(), Protocol::TCP, &data)?;
     self.ip_send_tx.send(ip_msg)?;
     Ok(())
   }
 
-  fn get_default_tcp_header(&self) -> TcpHeader {
+  fn make_default_tcp_header(&self) -> TcpHeader {
     debug_assert!(self.destination_port.is_some());
     TcpHeader::new(
       self.source_port,
@@ -272,6 +297,16 @@ impl TcpStream {
         self.destination_port = Some(destination_port);
       }
     }
+  }
+
+  /// set initial_ack based on syn
+  fn set_initial_ack(&mut self, ack: u32) {
+    self.initial_ack = Some(ack);
+  }
+
+  /// get stream state
+  pub fn state(&self) -> TcpStreamState {
+    self.state
   }
 }
 
