@@ -47,7 +47,7 @@ impl TcpLayer {
             let stream: Vec<_> = streams
               .iter()
               .filter(|&s| {
-                let src_port = s.lock().unwrap().get_source_port();
+                let src_port = s.lock().unwrap().source_port();
                 src_port == dst_port
               })
               .collect();
@@ -100,8 +100,9 @@ impl TcpLayer {
     for (i, stream) in streams.iter().enumerate() {
       let stream = stream.lock().unwrap();
       println!(
-        "Socket {i} - src: {}, dst: {:?}, state: {:?}",
-        stream.get_source_port(),
+        "Socket {i} - src: {:?}:{}, dst: {:?}, state: {:?}",
+        stream.source_ip(),
+        stream.source_port(),
         stream.destination(),
         stream.state()
       )
@@ -117,12 +118,12 @@ impl TcpLayer {
     self.streams.write().unwrap().push(stream);
   }
 
-  pub fn connect(&self, dst_ip: Ipv4Addr, dst_port: Port) {
+  pub fn connect(&self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr, dst_port: Port) {
     // TODO: should keep track of available ports and assign source port from there
-    let source_port = 1024;
+    let source_ip = 1024;
     // TODO: pass error back up?
     let stream =
-      TcpStream::connect(source_port, dst_ip, dst_port, self.ip_send_tx.clone()).unwrap();
+      TcpStream::connect(src_ip, source_ip, dst_ip, dst_port, self.ip_send_tx.clone()).unwrap();
     self.streams.write().unwrap().push(stream);
   }
 

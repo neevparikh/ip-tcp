@@ -220,6 +220,20 @@ impl IpLayer {
     }
   }
 
+  pub fn get_src_from_dst(&self, dst_ip: Ipv4Addr) -> Option<Ipv4Addr> {
+    let link_layer = self.link_layer.read().unwrap();
+    let interfaces = link_layer.get_interfaces();
+    let next_hop = match self.table.get_next_hop(dst_ip) {
+      Some(next_hop) => next_hop,
+      None => return None,
+    };
+
+    match interfaces.get(next_hop) {
+      Some(interface) => Some(interface.our_ip),
+      None => None,
+    }
+  }
+
   pub fn register_handler(&mut self, protocol_num: Protocol, handler: HandlerFunction) {
     self.handlers.lock().unwrap().insert(protocol_num, handler);
   }

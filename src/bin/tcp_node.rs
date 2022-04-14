@@ -140,8 +140,11 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
 
     "accept" | "a" => tcp_layer.accept(parse_num(tokens)?),
     "connect" | "c" => {
-      let (ip, port) = parse_tcp_address(tokens)?;
-      tcp_layer.connect(ip, port);
+      let (dst_ip, port) = parse_tcp_address(tokens)?;
+      match ip_layer.get_src_from_dst(dst_ip) {
+        Some(src_ip) => tcp_layer.connect(src_ip, dst_ip, port),
+        None => println!("Destination ip was not reachable"),
+      }
     }
     "send" | "s" => {
       let (socket_id, data) = parse_send_args(tokens)?;

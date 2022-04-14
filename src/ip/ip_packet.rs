@@ -339,6 +339,11 @@ impl IpPacket {
     self.calculate_and_set_checksum();
   }
 
+  /// sets the payload of the ip packet
+  pub(crate) fn set_data(&mut self, data: Vec<u8>) {
+    self.data = data;
+  }
+
   fn validate_options(&self) -> Result<()> {
     if self.option_data.len() % 4 != 0 {
       return Err(anyhow!(
