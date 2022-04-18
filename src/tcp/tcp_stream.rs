@@ -7,12 +7,10 @@ use anyhow::Result;
 use etherparse::{Ipv4Header, TcpHeader};
 use rand::random;
 
+use super::tcp_buffer::TcpBuffer;
 use super::{IpTcpPacket, Port};
 use crate::ip::protocol::Protocol;
 use crate::{debug, edebug, IpPacket};
-
-const TCP_BUF_SIZE: usize = u16::max_value() as usize;
-const MAX_WINDOW_SIZE: u16 = u16::max_value();
 
 pub type LockedTcpStream = Arc<Mutex<TcpStream>>;
 
@@ -55,8 +53,8 @@ pub struct TcpStream {
   /// about the current window?
 
   /// data
-  recv_buffer: [u8; TCP_BUF_SIZE],
-  send_buffer: [u8; TCP_BUF_SIZE],
+  recv_buffer: TcpBuffer,
+  send_buffer: TcpBuffer,
 
   /// TODO: how should commands like SHUTDOWN and CLOSE be passed
   /// Selecting???
@@ -207,8 +205,10 @@ impl TcpStream {
                 }
               }
             }
-            TcpStreamState::Established => todo!(),
-            TcpStreamState::Closed => todo!(),
+            TcpStreamState::Established => {}
+            TcpStreamState::Closed => {
+              edebug!("Packet received in Closed state: This should never probably never happen?");
+            }
             TcpStreamState::FinWait1 => todo!(),
             TcpStreamState::FinWait2 => todo!(),
             TcpStreamState::CloseWait => todo!(),
