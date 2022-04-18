@@ -7,7 +7,7 @@ use anyhow::Result;
 use etherparse::{Ipv4Header, TcpHeader};
 use rand::random;
 
-use super::tcp_buffer::TcpBuffer;
+use super::send_buffer::SendBuffer;
 use super::{IpTcpPacket, Port};
 use crate::ip::protocol::Protocol;
 use crate::{debug, edebug, IpPacket};
@@ -53,8 +53,8 @@ pub struct TcpStream {
   /// about the current window?
 
   /// data
-  recv_buffer: TcpBuffer,
-  send_buffer: TcpBuffer,
+  recv_buffer: SendBuffer, // TODO change
+  send_buffer: SendBuffer,
 
   /// TODO: how should commands like SHUTDOWN and CLOSE be passed
   /// Selecting???
@@ -74,16 +74,17 @@ impl TcpStream {
   ) -> LockedTcpStream {
     let (stream_tx, stream_rx) = mpsc::channel();
 
+    let initial_sequence_number = random();
     let stream = Arc::new(Mutex::new(TcpStream {
       source_ip,
       source_port,
       destination_ip,
       destination_port,
-      initial_sequence_number: random(),
+      initial_sequence_number,
       initial_ack: None,
       state: initial_state,
-      recv_buffer: [0u8; TCP_BUF_SIZE],
-      send_buffer: [0u8; TCP_BUF_SIZE],
+      recv_buffer: SendBuffer::new(ip_send_tx.clone(), initial_sequence_number),
+      send_buffer: SendBuffer::new(ip_send_tx.clone(), initial_sequence_number),
       stream_tx,
       ip_send_tx,
     }));
@@ -307,7 +308,7 @@ impl TcpStream {
       self.source_port,
       self.destination_port.unwrap(),
       self.initial_sequence_number,
-      MAX_WINDOW_SIZE,
+      0, // TODO
     )
   }
 
