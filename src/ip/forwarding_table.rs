@@ -297,10 +297,10 @@ impl ForwardingTable {
         command: RipCommand::Request,
         entries: Vec::new(),
       };
-      debug!(
-        "Sending request to destination_address {:?}",
-        destination_address
-      );
+      // debug!(
+      //   "Sending request to destination_address {:?}",
+      //   destination_address
+      // );
       ForwardingTable::make_and_send(rip_msg, &ip_send_tx, destination_address.clone())?
     }
     Ok(())
@@ -332,10 +332,10 @@ impl ForwardingTable {
           mask: SUBNET_MASK,
         });
       }
-      debug!(
-        "Sending response to destination_address {:?}",
-        destination_address
-      );
+      // debug!(
+      //   "Sending response to destination_address {:?}",
+      //   destination_address
+      // );
 
       ForwardingTable::make_and_send(rip_msg, &ip_send_tx, destination_address.clone())?
     }
