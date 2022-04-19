@@ -81,7 +81,7 @@ impl SendBuffer {
   /// TODO: write test for off by ones on wrapping stuff
   pub fn handle_ack(&self, ack_num: u32) -> Result<()> {
     let mut window = self.window.write().unwrap();
-    let bytes_acked = dbg!(window.handle_ack(ack_num));
+    let bytes_acked = window.handle_ack(ack_num);
     if bytes_acked > 0u32 {
       self.buf.write().unwrap().ack(bytes_acked);
       self.wake_send_thread_tx.send(())?;
@@ -105,8 +105,35 @@ impl SendBuffer {
     wake_timeout_thread_rx: Receiver<()>,
     wake_send_thread_tx: Sender<()>,
   ) {
-    let _window = self.window.clone();
+    let window = self.window.clone();
     thread::spawn(move || loop {
+      let window = window.read().unwrap();
+      let most_urgent_elem = window.elems.iter().reduce(|acc, item| {
+        if acc.time_to_retry < item.time_to_retry {
+          acc
+        } else {
+          item
+        }
+      });
+      let time_to_retry = if let Some(elem) = most_urgent_elem {
+        Some(elem.time_to_retry)
+      } else {
+        None
+      };
+      drop(window);
+
+      if let Some(time_to_retry) = time_to_retry {
+        let now = Instant::now();
+        if time_to_retry > now {
+          thread::sleep(time_to_retry.duration_since(now));
+        }
+
+        if wake_send_thread_tx.send(()).is_err() {
+          edebug!("timeout thread died");
+          break;
+        }
+      }
+
       match wake_timeout_thread_rx.recv() {
         Ok(()) => debug!("timeout thread woken"),
         Err(_) => {
@@ -161,7 +188,7 @@ impl SendBuffer {
       while window.bytes_in_window <= window.max_size && distance_to_end > 0 {
         debug!("Sending up a level");
         let bytes_left_to_send = window.max_size - window.bytes_in_window;
-        let bytes_to_send = bytes_left_to_send.min(MTU).min(buf.data.len());
+        let bytes_to_send = bytes_left_to_send.min(MTU).min(distance_to_end);
         stream_send_tx.send(StreamSendThreadMsg::Outgoing(
           curr_seq,
           Vec::from_iter(buf.read(curr_seq, bytes_to_send).copied()),
@@ -237,6 +264,7 @@ impl SendData {
     debug_assert!(self.first_sequnce_number <= seq_number);
     let start = (seq_number - self.first_sequnce_number) as usize;
     let end = start + bytes_to_read;
+    dbg!(start, end);
     self.data.range(start..end)
   }
 
@@ -265,6 +293,8 @@ impl SendData {
 
 #[cfg(test)]
 mod test {
+  use std::sync::mpsc::RecvTimeoutError;
+
   use super::*;
 
   fn setup() -> (SendBuffer, Receiver<StreamSendThreadMsg>) {
@@ -276,7 +306,7 @@ mod test {
   fn test_send_buffer_simple() {
     let (send_buf, send_thread_rx) = setup();
     let data = vec![1u8, 2u8, 3u8, 4u8];
-    send_buf.write_data(&data);
+    send_buf.write_data(&data).unwrap();
     match send_thread_rx.recv_timeout(Duration::from_millis(100)) {
       Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
         assert_eq!(seq_num, 1u32);
@@ -284,6 +314,56 @@ mod test {
       }
       Ok(_) => panic!("Unexpected mesg from send buffer"),
       Err(_) => panic!("This should not error"),
+    }
+  }
+
+  #[test]
+  fn test_multiple_sends() {
+    let (send_buf, send_thread_rx) = setup();
+    let data = vec![1u8, 2u8, 3u8, 4u8];
+    send_buf.write_data(&data).unwrap();
+    match send_thread_rx.recv_timeout(Duration::from_millis(100)) {
+      Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
+        assert_eq!(seq_num, 1u32);
+        assert_eq!(recv_data, data);
+      }
+      Ok(_) => panic!("Unexpected mesg from send buffer"),
+      Err(_) => panic!("This should not error"),
+    }
+
+    send_buf.write_data(&data).unwrap();
+    match send_thread_rx.recv_timeout(Duration::from_millis(100)) {
+      Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
+        assert_eq!(seq_num, 5u32);
+        assert_eq!(recv_data, data);
+      }
+      Ok(_) => panic!("Unexpected mesg from send buffer"),
+      Err(_) => panic!("This should not error"),
+    }
+  }
+
+  #[test]
+  fn test_single_retry() {
+    let (send_buf, send_thread_rx) = setup();
+    let data = vec![1u8, 2u8, 3u8, 4u8];
+    send_buf.write_data(&data).unwrap();
+    match send_thread_rx.recv_timeout(Duration::from_millis(100)) {
+      Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
+        assert_eq!(seq_num, 1u32);
+        assert_eq!(recv_data, data);
+      }
+      Ok(_) => panic!("Unexpected mesg from send buffer"),
+      Err(_) => panic!("This should not error"),
+    }
+
+    match send_thread_rx.recv_timeout(RETRY_INTERVAL * 2) {
+      Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
+        assert_eq!(seq_num, 1u32);
+        assert_eq!(recv_data, data);
+      }
+      Ok(_) => panic!("Unexpected mesg from send buffer"),
+      Err(RecvTimeoutError::Timeout) => panic!("Never got resend"),
+      Err(RecvTimeoutError::Disconnected) => panic!("Channel closed"),
     }
   }
 }
