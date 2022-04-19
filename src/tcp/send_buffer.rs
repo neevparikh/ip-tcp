@@ -66,7 +66,7 @@ impl SendBuffer {
         starting_sequence: initial_sequence_number + 1,
         elems:             VecDeque::with_capacity(MAX_WINDOW_SIZE),
         bytes_in_window:   0usize,
-        max_size:          2usize,
+        max_size:          MTU as usize, // TODO: what should this be
         next_timeout:      None,
       })),
 
@@ -161,7 +161,7 @@ impl SendBuffer {
       while window.bytes_in_window <= window.max_size && distance_to_end > 0 {
         debug!("Sending up a level");
         let bytes_left_to_send = window.max_size - window.bytes_in_window;
-        let bytes_to_send = bytes_left_to_send.min(MTU).max(buf.data.len());
+        let bytes_to_send = bytes_left_to_send.min(MTU).min(buf.data.len());
         stream_send_tx.send(StreamSendThreadMsg::Outgoing(
           curr_seq,
           Vec::from_iter(buf.read(curr_seq, bytes_to_send).copied()),
@@ -259,6 +259,31 @@ impl SendData {
       None
     } else {
       Some((end - seq_number + 1) as usize)
+    }
+  }
+}
+
+#[cfg(test)]
+mod test {
+  use super::*;
+
+  fn setup() -> (SendBuffer, Receiver<StreamSendThreadMsg>) {
+    let (send_thread_tx, send_thread_rx) = mpsc::channel();
+    (SendBuffer::new(send_thread_tx.clone(), 0), send_thread_rx)
+  }
+
+  #[test]
+  fn test_send_buffer_simple() {
+    let (send_buf, send_thread_rx) = setup();
+    let data = vec![1u8, 2u8, 3u8, 4u8];
+    send_buf.write_data(&data);
+    match send_thread_rx.recv_timeout(Duration::from_millis(100)) {
+      Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
+        assert_eq!(seq_num, 1u32);
+        assert_eq!(recv_data, data);
+      }
+      Ok(_) => panic!("Unexpected mesg from send buffer"),
+      Err(_) => panic!("This should not error"),
     }
   }
 }
