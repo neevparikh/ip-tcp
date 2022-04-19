@@ -612,7 +612,5 @@ mod tests {
 
     let invalid_offset = FragmentOffset::MAX_FRAGMENT_OFFSET + 1;
     assert!(FragmentOffset::new(true, true, invalid_offset).is_err());
-    let mut fragment_offset = FragmentOffset::new(true, true, 0).unwrap();
-    assert!(fragment_offset.set_fragment_offset(invalid_offset).is_err());
   }
 }
