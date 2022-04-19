@@ -97,7 +97,6 @@ impl SendBuffer {
     Ok(())
   }
 
-  /// TODO: does this really need to be it's own thread
   /// This thread checks what the shortest time in the window currently is, sleeps for that long,
   /// then wakes up the send thread
   pub fn start_timeout_thread(
@@ -238,8 +237,8 @@ impl SendWindow {
         debug_assert!(bytes_to_ack_from_curr < curr_elem.size);
         let mut curr_elem = curr_elem;
         curr_elem.size -= bytes_to_ack_from_curr;
-        bytes_popped += curr_elem.size;
-        debug_assert!(bytes_popped == bytes_acked);
+        bytes_popped += bytes_to_ack_from_curr;
+        debug_assert_eq!(bytes_popped, bytes_acked);
         self.elems.push_front(curr_elem);
         break;
       } else {
@@ -264,7 +263,6 @@ impl SendData {
     debug_assert!(self.first_sequnce_number <= seq_number);
     let start = (seq_number - self.first_sequnce_number) as usize;
     let end = start + bytes_to_read;
-    dbg!(start, end);
     self.data.range(start..end)
   }
 
@@ -360,6 +358,57 @@ mod test {
       Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
         assert_eq!(seq_num, 1u32);
         assert_eq!(recv_data, data);
+      }
+      Ok(_) => panic!("Unexpected mesg from send buffer"),
+      Err(RecvTimeoutError::Timeout) => panic!("Never got resend"),
+      Err(RecvTimeoutError::Disconnected) => panic!("Channel closed"),
+    }
+  }
+
+  /// Tests that acked bytes aren't resent
+  #[test]
+  fn test_single_ack() {
+    let (send_buf, send_thread_rx) = setup();
+    let data = vec![1u8, 2u8, 3u8, 4u8];
+    send_buf.write_data(&data).unwrap();
+    match send_thread_rx.recv_timeout(Duration::from_millis(100)) {
+      Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
+        assert_eq!(seq_num, 1u32);
+        assert_eq!(recv_data, data);
+      }
+      Ok(_) => panic!("Unexpected mesg from send buffer"),
+      Err(_) => panic!("This should not error"),
+    }
+
+    send_buf.handle_ack(5).unwrap();
+
+    match send_thread_rx.recv_timeout(RETRY_INTERVAL * 2) {
+      Ok(_) => panic!("Retransmitted despite ack"),
+      Err(RecvTimeoutError::Timeout) => (),
+      Err(RecvTimeoutError::Disconnected) => panic!("Channel closed"),
+    }
+  }
+
+  #[test]
+  fn test_partial_ack() {
+    let (send_buf, send_thread_rx) = setup();
+    let data = vec![1u8, 2u8, 3u8, 4u8];
+    send_buf.write_data(&data).unwrap();
+    match send_thread_rx.recv_timeout(Duration::from_millis(100)) {
+      Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
+        assert_eq!(seq_num, 1u32);
+        assert_eq!(recv_data, data);
+      }
+      Ok(_) => panic!("Unexpected mesg from send buffer"),
+      Err(_) => panic!("This should not error"),
+    }
+
+    send_buf.handle_ack(2).unwrap();
+
+    match send_thread_rx.recv_timeout(RETRY_INTERVAL * 2) {
+      Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
+        assert_eq!(seq_num, 2u32);
+        assert_eq!(recv_data, vec![2u8, 3u8, 4u8]);
       }
       Ok(_) => panic!("Unexpected mesg from send buffer"),
       Err(RecvTimeoutError::Timeout) => panic!("Never got resend"),
