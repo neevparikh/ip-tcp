@@ -28,6 +28,12 @@ pub enum TcpStreamState {
   Closing,
 }
 
+pub(super) enum StreamSendThreadMsg {
+  /// sequence number, data
+  Outgoing(u32, Vec<u8>),
+  Ack(u32),
+}
+
 #[derive(Debug)]
 pub struct TcpStream {
   /// TODO: how should we be actually setting this
@@ -73,6 +79,7 @@ impl TcpStream {
     ip_send_tx: Sender<IpPacket>,
   ) -> LockedTcpStream {
     let (stream_tx, stream_rx) = mpsc::channel();
+    let (send_thread_tx, send_thread_rx) = mpsc::channel();
 
     let initial_sequence_number = random();
     let stream = Arc::new(Mutex::new(TcpStream {
@@ -83,13 +90,14 @@ impl TcpStream {
       initial_sequence_number,
       initial_ack: None,
       state: initial_state,
-      recv_buffer: SendBuffer::new(ip_send_tx.clone(), initial_sequence_number),
-      send_buffer: SendBuffer::new(ip_send_tx.clone(), initial_sequence_number),
+      recv_buffer: SendBuffer::new(send_thread_tx.clone(), initial_sequence_number),
+      send_buffer: SendBuffer::new(send_thread_tx.clone(), initial_sequence_number),
       stream_tx,
       ip_send_tx,
     }));
 
     TcpStream::start_listen_thread(stream.clone(), stream_rx);
+    TcpStream::start_send_thread(stream.clone(), send_thread_rx);
     stream
   }
 
@@ -150,6 +158,32 @@ impl TcpStream {
     Ok(())
   }
 
+  /// Called by TcpLayer
+  pub fn send(&self, data: &[u8]) -> Result<()> {
+    self.send_buffer.write_data(data)?;
+    Ok(())
+  }
+
+  /// TODO: I'm not the biggest fan of this design because we get a huge amount of contention when
+  /// we are sending and receiving at the same time
+  fn start_send_thread(tcp_stream: LockedTcpStream, send_thread_rx: Receiver<StreamSendThreadMsg>) {
+    thread::spawn(move || loop {
+      match send_thread_rx.recv() {
+        Ok(StreamSendThreadMsg::Outgoing(seq_num, data)) => {
+          if tcp_stream.lock().unwrap().send_data(seq_num, data).is_err() {
+            edebug!("Failed to send data with seq_num {seq_num}");
+            break;
+          }
+        }
+        Ok(StreamSendThreadMsg::Ack(ack_num)) => todo!(),
+        Err(_) => {
+          edebug!("Closing streams send thread");
+          break;
+        }
+      }
+    });
+  }
+
   fn start_listen_thread(tcp_stream: LockedTcpStream, stream_rx: Receiver<IpTcpPacket>) {
     thread::spawn(move || loop {
       // TODO: should this be timeout
@@ -206,7 +240,16 @@ impl TcpStream {
                 }
               }
             }
-            TcpStreamState::Established => {}
+            TcpStreamState::Established => {
+              if tcp_header.ack {
+                if let Err(_) = stream
+                  .send_buffer
+                  .handle_ack(tcp_header.acknowledgment_number)
+                {
+                  edebug!("Failed to handle ack");
+                }
+              }
+            }
             TcpStreamState::Closed => {
               edebug!("Packet received in Closed state: This should never probably never happen?");
             }
@@ -279,6 +322,17 @@ impl TcpStream {
     msg.acknowledgment_number = self.initial_ack.unwrap() + 1;
 
     self.send_tcp_packet(msg, &[])?;
+    Ok(())
+  }
+
+  fn send_data(&mut self, seq_num: u32, data: Vec<u8>) -> Result<()> {
+    debug_assert_state_valid(&self.state, vec![TcpStreamState::Established]);
+
+    let mut msg = self.make_default_tcp_header();
+    // TODO: fix this, this is wrong
+    msg.sequence_number = seq_num;
+
+    self.send_tcp_packet(msg, &data)?;
     Ok(())
   }
 

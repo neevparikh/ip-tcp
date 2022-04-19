@@ -3,6 +3,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, RwLock};
 use std::thread;
 
+use anyhow::{anyhow, Result};
 use etherparse::{Ipv4Header, TcpHeader};
 
 use super::socket::{SocketId, SocketSide};
@@ -127,8 +128,16 @@ impl TcpLayer {
     self.streams.write().unwrap().push(stream);
   }
 
-  pub fn send(&self, socket_id: SocketId, data: Vec<u8>) {
-    todo!()
+  pub fn send(&self, socket_id: SocketId, data: Vec<u8>) -> Result<()> {
+    let streams = self.streams.read().unwrap();
+    match streams.get(socket_id) {
+      Some(stream) => {
+        let stream = stream.lock().unwrap();
+        stream.send(&data)?;
+        Ok(())
+      }
+      None => return Err(anyhow!("Unknown socket_id: {socket_id}")),
+    }
   }
 
   pub fn recv(&self, socket_id: SocketId, numbytes: usize, should_block: bool) {

@@ -1,10 +1,16 @@
-use std::collections::VecDeque;
+use std::collections::{vec_deque, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
-use super::{MAX_WINDOW_SIZE, TCP_BUF_SIZE};
+use anyhow::Result;
+
+use super::tcp_stream::StreamSendThreadMsg;
+use super::{MAX_WINDOW_SIZE, MTU, TCP_BUF_SIZE};
 use crate::{debug, edebug, IpPacket};
+
+const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 struct WindowElement {
@@ -31,8 +37,8 @@ struct SendWindow {
 struct SendData {
   pub data: VecDeque<u8>,
 
-  /// Last sequence number written in by application
-  pub last_sequence_number: u32,
+  /// sequence number of the byte returned by data.pop()
+  pub first_sequnce_number: u32,
 }
 
 #[derive(Debug)]
@@ -40,17 +46,21 @@ pub(super) struct SendBuffer {
   buf: Arc<RwLock<SendData>>,
 
   /// Fields for sliding window
-  window:                 Arc<RwLock<SendWindow>>,
-  wake_up_send_thread_tx: Sender<()>,
+  window:              Arc<RwLock<SendWindow>>,
+  wake_send_thread_tx: Sender<()>,
 }
 
 impl SendBuffer {
-  pub fn new(ip_send_tx: Sender<IpPacket>, initial_sequence_number: u32) -> SendBuffer {
-    let (wake_up_send_thread_tx, wake_up_send_thread_rx) = mpsc::channel();
+  pub fn new(
+    stream_send_tx: Sender<StreamSendThreadMsg>,
+    initial_sequence_number: u32,
+  ) -> SendBuffer {
+    let (wake_send_thread_tx, wake_send_thread_rx) = mpsc::channel();
+    let (wake_timeout_thread_tx, wake_timeout_thread_rx) = mpsc::channel();
     let buf = SendBuffer {
-      buf: Arc::new(RwLock::new(SendData {
+      buf:    Arc::new(RwLock::new(SendData {
         data:                 VecDeque::with_capacity(TCP_BUF_SIZE),
-        last_sequence_number: initial_sequence_number,
+        first_sequnce_number: initial_sequence_number + 1,
       })),
       window: Arc::new(RwLock::new(SendWindow {
         starting_sequence: initial_sequence_number + 1,
@@ -59,35 +69,114 @@ impl SendBuffer {
         max_size:          2usize,
         next_timeout:      None,
       })),
-      wake_up_send_thread_tx,
+
+      wake_send_thread_tx: wake_send_thread_tx.clone(),
     };
 
-    buf.start_send_thread(wake_up_send_thread_rx);
+    buf.start_send_thread(stream_send_tx, wake_send_thread_rx, wake_timeout_thread_tx);
+    buf.start_timeout_thread(wake_timeout_thread_rx, wake_send_thread_tx);
     buf
   }
 
   /// TODO: write test for off by ones on wrapping stuff
-  pub fn handle_ack(&self, ack_num: u32) {
+  pub fn handle_ack(&self, ack_num: u32) -> Result<()> {
     let mut window = self.window.write().unwrap();
-    window.handle_ack(ack_num);
+    let bytes_acked = dbg!(window.handle_ack(ack_num));
+    if bytes_acked > 0u32 {
+      self.buf.write().unwrap().ack(bytes_acked);
+      self.wake_send_thread_tx.send(())?;
+    };
+    Ok(())
   }
 
-  /// blocks if no space
-  pub fn write_data(&self, data: &[u8]) {
+  /// blocks if no space TODO
+  pub fn write_data(&self, data: &[u8]) -> Result<()> {
     let mut buf = self.buf.write().unwrap();
     buf.write(data);
+    self.wake_send_thread_tx.send(())?;
+    Ok(())
   }
 
   /// TODO: does this really need to be it's own thread
   /// This thread checks what the shortest time in the window currently is, sleeps for that long,
   /// then wakes up the send thread
-  pub fn start_timeout_thread(&self) {}
+  pub fn start_timeout_thread(
+    &self,
+    wake_timeout_thread_rx: Receiver<()>,
+    wake_send_thread_tx: Sender<()>,
+  ) {
+    let _window = self.window.clone();
+    thread::spawn(move || loop {
+      match wake_timeout_thread_rx.recv() {
+        Ok(()) => debug!("timeout thread woken"),
+        Err(_) => {
+          edebug!("timeout thread died");
+          break;
+        }
+      }
+    });
+  }
 
   /// Starts thread which owns ip_send_tx and is in charge of sending messages
   ///
   /// Wakes up when it
-  fn start_send_thread(&self, wake_up_send_thread_rx: Receiver<()>) {
-    todo!();
+  fn start_send_thread(
+    &self,
+    stream_send_tx: Sender<StreamSendThreadMsg>,
+    wake_send_thread_rx: Receiver<()>,
+    wake_timeout_thread_tx: Sender<()>,
+  ) {
+    let window = self.window.clone();
+    let buf = self.buf.clone();
+    thread::spawn(move || loop {
+      if wake_send_thread_rx.recv().is_err() {
+        break;
+      }
+
+      let mut window = window.write().unwrap();
+      let buf = buf.read().unwrap();
+
+      // handle timeouts
+      let now = Instant::now();
+      let mut curr_seq = window.starting_sequence;
+      for elem in window.elems.iter_mut() {
+        if elem.time_to_retry < now {
+          stream_send_tx.send(StreamSendThreadMsg::Outgoing(
+            curr_seq,
+            Vec::from_iter(buf.read(curr_seq, elem.size as usize).copied()),
+          ));
+          // TODO: connection should close if this ever gets too high
+          elem.num_retries += 1;
+          elem.time_to_retry = now + RETRY_INTERVAL;
+        }
+        curr_seq += elem.size;
+      }
+
+      // TODO: we will eventually need to know the receivers window size
+      let mut distance_to_end = match buf.dist_to_end_from_seq(curr_seq) {
+        Some(d) => d,
+        None => continue,
+      };
+
+      while window.bytes_in_window <= window.max_size && distance_to_end > 0 {
+        debug!("Sending up a level");
+        let bytes_left_to_send = window.max_size - window.bytes_in_window;
+        let bytes_to_send = bytes_left_to_send.min(MTU).max(buf.data.len());
+        stream_send_tx.send(StreamSendThreadMsg::Outgoing(
+          curr_seq,
+          Vec::from_iter(buf.read(curr_seq, bytes_to_send).copied()),
+        ));
+        window.bytes_in_window += bytes_to_send;
+        curr_seq += bytes_to_send as u32;
+        distance_to_end -= bytes_to_send;
+        window.elems.push_back(WindowElement {
+          num_retries:   0,
+          time_to_retry: now + RETRY_INTERVAL,
+          size:          bytes_to_send as u32,
+        });
+      }
+      wake_timeout_thread_tx.send(());
+    });
   }
 }
 
@@ -97,8 +186,8 @@ impl SendWindow {
     // TODO: is there a slicker way to do this
     let window_start = self.starting_sequence;
     let window_end = window_start.wrapping_add(self.bytes_in_window.try_into().unwrap());
-    let in_window_no_wrapping = ack_num > window_start && ack_num < window_end;
-    let in_window_wrapping = window_end < window_start && ack_num < window_end;
+    let in_window_no_wrapping = dbg!(ack_num) > dbg!(window_start) && ack_num <= dbg!(window_end);
+    let in_window_wrapping = window_end < window_start && ack_num <= window_end;
     if !(in_window_wrapping || in_window_no_wrapping) {
       return 0u32;
     }
@@ -141,5 +230,35 @@ impl SendData {
     let left = TCP_BUF_SIZE - self.data.len();
     debug_assert!(data.len() <= left);
     self.data.extend(data);
+  }
+
+  /// reads from buffer
+  pub fn read<'a>(&'a self, seq_number: u32, bytes_to_read: usize) -> vec_deque::Iter<u8> {
+    debug_assert!(self.first_sequnce_number <= seq_number);
+    let start = (seq_number - self.first_sequnce_number) as usize;
+    let end = start + bytes_to_read;
+    self.data.range(start..end)
+  }
+
+  pub fn ack(&mut self, bytes_acked: u32) {
+    debug_assert!(bytes_acked <= self.data.len() as u32);
+    // I really want a better function to do this, should be O(1)
+    for _ in 0..bytes_acked {
+      self.data.pop_front();
+    }
+    self.first_sequnce_number += bytes_acked;
+  }
+
+  /// Returns none if the data associated with seq_number is not currently in the buffer, otherwise
+  /// returns the number of bytes after the point inclusice of seq_number
+  ///
+  /// TODO: handle wrapping
+  pub fn dist_to_end_from_seq(&self, seq_number: u32) -> Option<usize> {
+    let end = self.first_sequnce_number + (self.data.len() as u32) - 1;
+    if seq_number < self.first_sequnce_number || seq_number > end {
+      None
+    } else {
+      Some((end - seq_number + 1) as usize)
+    }
   }
 }
