@@ -1,5 +1,6 @@
 use etherparse::{Ipv4Header, TcpHeader};
 
+pub mod recv_buffer;
 pub mod send_buffer;
 pub mod socket;
 pub mod tcp_layer;

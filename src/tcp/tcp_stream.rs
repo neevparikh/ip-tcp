@@ -7,6 +7,7 @@ use anyhow::Result;
 use etherparse::{Ipv4Header, TcpHeader};
 use rand::random;
 
+use super::recv_buffer::RecvBuffer;
 use super::send_buffer::SendBuffer;
 use super::{IpTcpPacket, Port};
 use crate::ip::protocol::Protocol;
@@ -59,7 +60,7 @@ pub struct TcpStream {
   /// about the current window?
 
   /// data
-  recv_buffer: SendBuffer, // TODO change
+  recv_buffer: RecvBuffer,
   send_buffer: SendBuffer,
 
   /// TODO: how should commands like SHUTDOWN and CLOSE be passed
@@ -81,7 +82,7 @@ impl TcpStream {
     let (stream_tx, stream_rx) = mpsc::channel();
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
 
-    let initial_sequence_number = random();
+    let initial_sequence_number = random(); // TODO: switch to ISN being clock time
     let stream = Arc::new(Mutex::new(TcpStream {
       source_ip,
       source_port,
@@ -90,7 +91,7 @@ impl TcpStream {
       initial_sequence_number,
       initial_ack: None,
       state: initial_state,
-      recv_buffer: SendBuffer::new(send_thread_tx.clone(), initial_sequence_number),
+      recv_buffer: RecvBuffer::new(send_thread_tx.clone(), initial_sequence_number),
       send_buffer: SendBuffer::new(send_thread_tx.clone(), initial_sequence_number),
       stream_tx,
       ip_send_tx,
@@ -164,6 +165,12 @@ impl TcpStream {
     Ok(())
   }
 
+  /// Called by TcpLayer
+  pub fn recv(&self, num_bytes: usize) -> Result<()> {
+    let mut data = Vec::with_capacity(num_bytes);
+    self.recv_buffer.recv_data(&mut data)
+  }
+
   /// TODO: I'm not the biggest fan of this design because we get a huge amount of contention when
   /// we are sending and receiving at the same time
   fn start_send_thread(tcp_stream: LockedTcpStream, send_thread_rx: Receiver<StreamSendThreadMsg>) {
@@ -188,7 +195,7 @@ impl TcpStream {
     thread::spawn(move || loop {
       // TODO: should this be timeout
       match stream_rx.recv() {
-        Ok((ip_header, tcp_header, _data)) => {
+        Ok((ip_header, tcp_header, data)) => {
           let mut stream = tcp_stream.lock().unwrap();
           match stream.state {
             TcpStreamState::Listen => {
@@ -249,6 +256,9 @@ impl TcpStream {
                   edebug!("Failed to handle ack");
                 }
               }
+              stream
+                .recv_buffer
+                .handle_seq(tcp_header.sequence_number, data);
             }
             TcpStreamState::Closed => {
               edebug!("Packet received in Closed state: This should never probably never happen?");
