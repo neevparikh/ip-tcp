@@ -12,14 +12,15 @@ use crate::{debug, edebug};
 #[derive(Debug)]
 struct RecvWindow {
   /// Refers to the first valid initial_sequence_number
-  initial_sequence_number: u32,
+  initial_sequence_number: Option<u32>,
+
   /// Refers to the index which represents the left window -- not in seq_num land
-  left_index:              AtomicU32,
+  left_index:   AtomicU32,
   /// Refers to the index where the reader is
-  reader_index:            u32,
-  data_ready:              Condvar,
-  pub starts:              BTreeMap<u32, u32>,
-  pub ends:                BTreeMap<u32, u32>,
+  reader_index: u32,
+  data_ready:   Condvar,
+  pub starts:   BTreeMap<u32, u32>,
+  pub ends:     BTreeMap<u32, u32>,
 }
 
 #[derive(Debug)]
@@ -30,15 +31,12 @@ pub(super) struct RecvBuffer {
 }
 
 impl RecvBuffer {
-  pub fn new(
-    stream_send_tx: Sender<StreamSendThreadMsg>,
-    initial_sequence_number: u32,
-  ) -> RecvBuffer {
+  pub fn new(stream_send_tx: Sender<StreamSendThreadMsg>) -> RecvBuffer {
     RecvBuffer {
       buf: Arc::new(RwLock::new(vec![0u8; TCP_BUF_SIZE])),
       stream_send_tx,
       window_data: RecvWindow {
-        initial_sequence_number: initial_sequence_number + 1,
+        initial_sequence_number: None,
         left_index:              AtomicU32::new(0),
         reader_index:            0,
         data_ready:              Condvar::new(),
@@ -66,12 +64,16 @@ impl RecvBuffer {
     Ok(())
   }
 
+  pub fn set_initial_seq_num(&mut self, initial_seq: u32) {
+    self.window_data.initial_sequence_number = Some(initial_seq);
+  }
+
   /// Handle incoming packet, with a seq_num and data, moving window appropriately.
   pub fn handle_seq(&mut self, seq_num: u32, mut data: Vec<u8>) {
     let size: u32 = data.len().try_into().unwrap();
     let win = &mut self.window_data;
-    if seq_num >= win.initial_sequence_number {
-      let s = seq_num - win.initial_sequence_number;
+    if seq_num >= win.initial_sequence_number.unwrap() {
+      let s = seq_num - win.initial_sequence_number.unwrap(); // TODO make this all wrapping
       let e = s + size;
 
       let starts: Vec<_> = win
@@ -169,7 +171,6 @@ impl RecvBuffer {
         .window_data
         .left_index
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left_index| {
-          dbg!(left_index);
           if left_index == l || (l..r).contains(&left_index) {
             Some(r)
           } else {
@@ -191,10 +192,9 @@ mod test {
 
   fn setup(initial_seq: u32) -> (RecvBuffer, Receiver<StreamSendThreadMsg>) {
     let (recv_thread_tx, recv_thread_rx) = channel();
-    (
-      RecvBuffer::new(recv_thread_tx.clone(), initial_seq),
-      recv_thread_rx,
-    )
+    let mut rb = RecvBuffer::new(recv_thread_tx.clone());
+    rb.set_initial_seq_num(initial_seq);
+    (rb, recv_thread_rx)
   }
 
   #[test]

@@ -5,11 +5,10 @@ use std::{thread, vec};
 
 use anyhow::Result;
 use etherparse::{Ipv4Header, TcpHeader};
-use rand::random;
 
 use super::recv_buffer::RecvBuffer;
 use super::send_buffer::SendBuffer;
-use super::{IpTcpPacket, Port};
+use super::{IpTcpPacket, Port, TCP_BUF_SIZE};
 use crate::ip::protocol::Protocol;
 use crate::{debug, edebug, IpPacket};
 
@@ -91,7 +90,7 @@ impl TcpStream {
       initial_sequence_number,
       initial_ack: None,
       state: initial_state,
-      recv_buffer: RecvBuffer::new(send_thread_tx.clone(), initial_sequence_number),
+      recv_buffer: RecvBuffer::new(send_thread_tx.clone()),
       send_buffer: SendBuffer::new(send_thread_tx.clone(), initial_sequence_number),
       stream_tx,
       ip_send_tx,
@@ -211,6 +210,9 @@ impl TcpStream {
                 let port = tcp_header.source_port;
 
                 stream.set_initial_ack(tcp_header.sequence_number);
+                stream
+                  .recv_buffer
+                  .set_initial_seq_num(tcp_header.sequence_number.wrapping_add(1));
                 stream.set_source_ip(ip_header.destination.into());
                 match stream.send_syn_ack(ip, port) {
                   Ok(()) => {
@@ -235,6 +237,9 @@ impl TcpStream {
               let port = tcp_header.source_port;
               if tcp_header.ack && tcp_header.syn {
                 stream.set_initial_ack(tcp_header.sequence_number);
+                stream
+                  .recv_buffer
+                  .set_initial_seq_num(tcp_header.sequence_number.wrapping_add(1));
                 stream.set_source_ip(ip_header.destination.into());
                 match stream.send_ack(ip, port) {
                   Ok(()) => {
@@ -244,6 +249,9 @@ impl TcpStream {
                 }
               } else if tcp_header.syn && !tcp_header.ack {
                 stream.set_initial_ack(tcp_header.sequence_number);
+                stream
+                  .recv_buffer
+                  .set_initial_seq_num(tcp_header.sequence_number.wrapping_add(1));
                 stream.set_source_ip(ip_header.destination.into());
                 match stream.send_ack(ip, port) {
                   Ok(()) => {
@@ -324,7 +332,7 @@ impl TcpStream {
     let mut msg = self.make_default_tcp_header();
     msg.ack = true;
     // TODO: fix this, this is wrong
-    msg.sequence_number = self.initial_sequence_number;
+    msg.sequence_number = self.initial_sequence_number.wrapping_add(1);
     msg.acknowledgment_number = ack;
 
     self.send_tcp_packet(msg, &[])?;
@@ -391,7 +399,7 @@ impl TcpStream {
       self.source_port,
       self.destination_port.unwrap(),
       self.initial_sequence_number,
-      0, // TODO
+      TCP_BUF_SIZE as u16, // TODO
     )
   }
 
