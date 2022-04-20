@@ -140,8 +140,17 @@ impl TcpLayer {
     }
   }
 
-  pub fn recv(&self, socket_id: SocketId, numbytes: usize, should_block: bool) {
-    todo!()
+  pub fn recv(&self, socket_id: SocketId, numbytes: usize, should_block: bool) -> Result<()> {
+    let streams = self.streams.read().unwrap();
+    match streams.get(socket_id) {
+      Some(stream) => {
+        let mut stream = stream.lock().unwrap();
+        let data = stream.recv(numbytes)?; // TODO what to do with this?
+        debug!("Got {:?}", std::str::from_utf8(&data));
+        Ok(())
+      }
+      None => return Err(anyhow!("Unknown socket_id: {socket_id}")),
+    }
   }
 
   pub fn shutdown(&self, socket_id: SocketId, shutdown_method: SocketSide) {

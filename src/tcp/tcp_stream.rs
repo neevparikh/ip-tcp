@@ -166,9 +166,10 @@ impl TcpStream {
   }
 
   /// Called by TcpLayer
-  pub fn recv(&self, num_bytes: usize) -> Result<()> {
-    let mut data = Vec::with_capacity(num_bytes);
-    self.recv_buffer.recv_data(&mut data)
+  pub fn recv(&mut self, num_bytes: usize) -> Result<Vec<u8>> {
+    let mut data = vec![0u8; num_bytes];
+    self.recv_buffer.read_data(&mut data)?;
+    Ok(data)
   }
 
   /// TODO: I'm not the biggest fan of this design because we get a huge amount of contention when
@@ -177,12 +178,17 @@ impl TcpStream {
     thread::spawn(move || loop {
       match send_thread_rx.recv() {
         Ok(StreamSendThreadMsg::Outgoing(seq_num, data)) => {
-          if tcp_stream.lock().unwrap().send_data(seq_num, data).is_err() {
+          if let Err(e) = tcp_stream.lock().unwrap().send_data(seq_num, data) {
             edebug!("Failed to send data with seq_num {seq_num}");
             break;
           }
         }
-        Ok(StreamSendThreadMsg::Ack(ack_num)) => todo!(),
+        Ok(StreamSendThreadMsg::Ack(ack_num)) => {
+          if let Err(e) = tcp_stream.lock().unwrap().send_ack_for_data(ack_num) {
+            edebug!("Failed to send {ack_num} for data");
+            break;
+          }
+        }
         Err(_) => {
           edebug!("Closing streams send thread");
           break;
@@ -312,6 +318,19 @@ impl TcpStream {
     Ok(())
   }
 
+  // TODO make this happen when sending other data or something like this?
+  fn send_ack_for_data(&mut self, ack: u32) -> Result<()> {
+    debug_assert_state_valid(&self.state, vec![TcpStreamState::Established]); // TODO check this
+    let mut msg = self.make_default_tcp_header();
+    msg.ack = true;
+    // TODO: fix this, this is wrong
+    msg.sequence_number = self.initial_sequence_number;
+    msg.acknowledgment_number = ack;
+
+    self.send_tcp_packet(msg, &[])?;
+    Ok(())
+  }
+
   fn send_ack(&mut self, destination_ip: Ipv4Addr, destination_port: Port) -> Result<()> {
     debug_assert_state_valid(
       &self.state,
@@ -329,7 +348,7 @@ impl TcpStream {
     msg.ack = true;
     // TODO: fix this, this is wrong
     msg.sequence_number = self.initial_sequence_number;
-    msg.acknowledgment_number = self.initial_ack.unwrap() + 1;
+    msg.acknowledgment_number = self.initial_ack.unwrap().wrapping_add(1);
 
     self.send_tcp_packet(msg, &[])?;
     Ok(())
