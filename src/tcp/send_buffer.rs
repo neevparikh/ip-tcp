@@ -259,7 +259,7 @@ impl SendData {
   }
 
   /// reads from buffer
-  pub fn read<'a>(&'a self, seq_number: u32, bytes_to_read: usize) -> vec_deque::Iter<u8> {
+  pub fn read(&self, seq_number: u32, bytes_to_read: usize) -> vec_deque::Iter<u8> {
     let start = seq_number.wrapping_sub(self.first_sequnce_number) as usize;
     let end = start + bytes_to_read;
     self.data.range(start..end)

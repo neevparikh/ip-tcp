@@ -82,7 +82,7 @@ impl TcpStream {
     let (stream_tx, stream_rx) = mpsc::channel();
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
 
-    let initial_sequence_number = random(); // TODO: switch to ISN being clock time
+    let initial_sequence_number = 0; // TODO: switch to ISN being clock time
     let stream = Arc::new(Mutex::new(TcpStream {
       source_ip,
       source_port,
