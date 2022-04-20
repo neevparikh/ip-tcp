@@ -56,7 +56,10 @@ impl RecvBuffer {
         ..(self.window_data.reader_index as usize) + data.len()]
         .to_vec();
       data.swap_with_slice(&mut ready_slice);
-      self.window_data.reader_index = self.window_data.reader_index.wrapping_add(1);
+      self.window_data.reader_index = self
+        .window_data
+        .reader_index
+        .wrapping_add(data.len() as u32);
     } else {
       // Block here
       todo!();
