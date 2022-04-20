@@ -76,6 +76,7 @@ impl RecvBuffer {
       .collect();
 
     let (l, r) = if starts.len() == 0 && ends.len() == 0 {
+      // disjoint
       win.starts.insert(s, e);
       win.ends.insert(e, s);
 
@@ -117,15 +118,22 @@ impl RecvBuffer {
 
       (existing_s, e)
     } else {
-      let (right_s, right_e) = starts.last().unwrap();
-      let (left_s, left_e) = ends.first().unwrap();
-      win.starts.remove(&right_s);
-      win.ends.remove(&right_e);
-      win.starts.remove(&left_s);
-      win.ends.remove(&left_e);
+      // general case of arbitrary intersections in the middle
+      let (_, right_e) = starts.last().unwrap();
+      let (_, left_s) = ends.first().unwrap();
+
+      for (s, e) in &starts {
+        win.starts.remove(&s);
+        win.ends.remove(&e);
+      }
+      for (e, s) in &ends {
+        win.starts.remove(&s);
+        win.ends.remove(&e);
+      }
 
       let l = if *left_s < s { *left_s } else { s };
       let r = if *right_e > e { *right_e } else { e };
+
       win.starts.insert(l, r);
       win.ends.insert(r, l);
 
@@ -280,7 +288,24 @@ mod test {
     let (mut buf, _) = setup(0);
 
     buf.handle_seq(1, vec![0u8, 1u8]);
+
+    dbg!(&buf.window_data.starts);
+    dbg!(&buf.window_data.ends);
+
+    debug_assert!(buf.window_data.starts.contains_key(&0u32));
+    debug_assert!(buf.window_data.ends.contains_key(&2u32));
+    debug_assert_eq!(buf.window_data.starts[&0u32], 2u32);
+    debug_assert_eq!(buf.window_data.ends[&2u32], 0u32);
+
     buf.handle_seq(4, vec![3u8, 4u8]);
+
+    dbg!(&buf.window_data.starts);
+    dbg!(&buf.window_data.ends);
+
+    debug_assert!(buf.window_data.starts.contains_key(&3u32));
+    debug_assert!(buf.window_data.ends.contains_key(&5u32));
+    debug_assert_eq!(buf.window_data.starts[&3u32], 5u32);
+    debug_assert_eq!(buf.window_data.ends[&5u32], 3u32);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..9],
@@ -294,6 +319,13 @@ mod test {
       vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 0u8, 0u8, 0u8]
     );
     debug_assert_eq!(buf.window_data.left_index, 6);
+
+    dbg!(&buf.window_data.starts);
+    dbg!(&buf.window_data.ends);
+    debug_assert!(buf.window_data.starts.contains_key(&0u32));
+    debug_assert!(buf.window_data.ends.contains_key(&6u32));
+    debug_assert_eq!(buf.window_data.starts[&0u32], 6u32);
+    debug_assert_eq!(buf.window_data.ends[&6u32], 0u32);
   }
 
   #[test]
@@ -316,6 +348,13 @@ mod test {
       vec![0u8, 0u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8]
     );
     debug_assert_eq!(buf.window_data.left_index, 0);
+
+    dbg!(&buf.window_data.starts);
+    dbg!(&buf.window_data.ends);
+    debug_assert!(buf.window_data.starts.contains_key(&2u32));
+    debug_assert!(buf.window_data.ends.contains_key(&9u32));
+    debug_assert_eq!(buf.window_data.starts[&2u32], 9u32);
+    debug_assert_eq!(buf.window_data.ends[&9u32], 2u32);
   }
 
   #[test]
@@ -339,5 +378,12 @@ mod test {
       vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8]
     );
     debug_assert_eq!(buf.window_data.left_index, 9);
+
+    dbg!(&buf.window_data.starts);
+    dbg!(&buf.window_data.ends);
+    debug_assert!(buf.window_data.starts.contains_key(&0u32));
+    debug_assert!(buf.window_data.ends.contains_key(&9u32));
+    debug_assert_eq!(buf.window_data.starts[&0u32], 9u32);
+    debug_assert_eq!(buf.window_data.ends[&9u32], 0u32);
   }
 }
