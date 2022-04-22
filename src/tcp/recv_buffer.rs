@@ -202,10 +202,10 @@ mod test {
 
   #[test]
   fn test_adding() {
-    let (mut buf, _) = setup(0);
-    buf.handle_seq(1, vec![0u8, 1u8]);
+    let (mut buf, _rcv) = setup(0);
+    buf.handle_seq(0, vec![0u8, 1u8]);
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
-    buf.handle_seq(3, vec![2u8, 3u8]);
+    buf.handle_seq(2, vec![2u8, 3u8]);
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 4);
 
     assert_eq!(
@@ -216,10 +216,10 @@ mod test {
 
   #[test]
   fn test_disjoint() {
-    let (mut buf, _) = setup(0);
-    buf.handle_seq(1, vec![0u8, 1u8]);
+    let (mut buf, _rcv) = setup(0);
+    buf.handle_seq(0, vec![0u8, 1u8]);
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
-    buf.handle_seq(8, vec![7u8, 8u8]);
+    buf.handle_seq(7, vec![7u8, 8u8]);
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
 
     assert_eq!(
@@ -227,7 +227,7 @@ mod test {
       vec![0u8, 1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 7u8, 8u8]
     );
 
-    buf.handle_seq(4, vec![3u8, 4u8]);
+    buf.handle_seq(3, vec![3u8, 4u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..9],
@@ -238,10 +238,10 @@ mod test {
 
   #[test]
   fn test_exact_interval() {
-    let (mut buf, _) = setup(0);
-    buf.handle_seq(1, vec![0u8, 1u8]);
+    let (mut buf, _rcv) = setup(0);
+    buf.handle_seq(0, vec![0u8, 1u8]);
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
-    buf.handle_seq(5, vec![4u8, 5u8]);
+    buf.handle_seq(4, vec![4u8, 5u8]);
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
 
     assert_eq!(
@@ -249,7 +249,7 @@ mod test {
       vec![0u8, 1u8, 0u8, 0u8, 4u8, 5u8]
     );
 
-    buf.handle_seq(3, vec![2u8, 3u8]);
+    buf.handle_seq(2, vec![2u8, 3u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..6],
@@ -260,16 +260,16 @@ mod test {
 
   #[test]
   fn test_overlap_left() {
-    let (mut buf, _) = setup(0);
-    buf.handle_seq(1, vec![0u8, 1u8, 2u8]);
-    buf.handle_seq(5, vec![4u8, 5u8]);
+    let (mut buf, _rcv) = setup(0);
+    buf.handle_seq(0, vec![0u8, 1u8, 2u8]);
+    buf.handle_seq(4, vec![4u8, 5u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..6],
       vec![0u8, 1u8, 2u8, 0u8, 4u8, 5u8]
     );
 
-    buf.handle_seq(3, vec![2u8, 3u8]);
+    buf.handle_seq(2, vec![2u8, 3u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..6],
@@ -280,16 +280,16 @@ mod test {
 
   #[test]
   fn test_overlap_right() {
-    let (mut buf, _) = setup(0);
-    buf.handle_seq(1, vec![0u8, 1u8]);
-    buf.handle_seq(4, vec![3u8, 4u8, 5u8]);
+    let (mut buf, _rcv) = setup(0);
+    buf.handle_seq(0, vec![0u8, 1u8]);
+    buf.handle_seq(3, vec![3u8, 4u8, 5u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..6],
       vec![0u8, 1u8, 0u8, 3u8, 4u8, 5u8]
     );
 
-    buf.handle_seq(3, vec![2u8, 3u8]);
+    buf.handle_seq(2, vec![2u8, 3u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..6],
@@ -301,15 +301,15 @@ mod test {
   #[test]
   /// Consumes an entire existing interval, without intersecting others
   fn test_subsume_no_intersection() {
-    let (mut buf, _) = setup(0);
-    buf.handle_seq(3, vec![2u8, 3u8]);
+    let (mut buf, _rcv) = setup(0);
+    buf.handle_seq(2, vec![2u8, 3u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..6],
       vec![0u8, 0u8, 2u8, 3u8, 0u8, 0u8]
     );
 
-    buf.handle_seq(2, vec![1u8, 2u8, 3u8, 4u8]);
+    buf.handle_seq(1, vec![1u8, 2u8, 3u8, 4u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..6],
@@ -321,9 +321,9 @@ mod test {
   #[test]
   /// Consumes an entire existing interval, with left intersection
   fn test_subsume_left_intersection() {
-    let (mut buf, _) = setup(0);
+    let (mut buf, _rcv) = setup(0);
 
-    buf.handle_seq(1, vec![0u8, 1u8]);
+    buf.handle_seq(0, vec![0u8, 1u8]);
 
     dbg!(&buf.window_data.starts);
     dbg!(&buf.window_data.ends);
@@ -333,7 +333,7 @@ mod test {
     debug_assert_eq!(buf.window_data.starts[&0u32], 2u32);
     debug_assert_eq!(buf.window_data.ends[&2u32], 0u32);
 
-    buf.handle_seq(4, vec![3u8, 4u8]);
+    buf.handle_seq(3, vec![3u8, 4u8]);
 
     dbg!(&buf.window_data.starts);
     dbg!(&buf.window_data.ends);
@@ -348,7 +348,7 @@ mod test {
       vec![0u8, 1u8, 0u8, 3u8, 4u8, 0u8, 0u8, 0u8, 0u8]
     );
 
-    buf.handle_seq(2, vec![1u8, 2u8, 3u8, 4u8, 5u8]);
+    buf.handle_seq(1, vec![1u8, 2u8, 3u8, 4u8, 5u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..9],
@@ -367,17 +367,17 @@ mod test {
   #[test]
   /// Consumes an entire existing interval, with right intersection
   fn test_subsume_right_intersection() {
-    let (mut buf, _) = setup(0);
+    let (mut buf, _rcv) = setup(0);
 
-    buf.handle_seq(8, vec![7u8, 8u8]);
-    buf.handle_seq(4, vec![3u8, 4u8]);
+    buf.handle_seq(7, vec![7u8, 8u8]);
+    buf.handle_seq(3, vec![3u8, 4u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..9],
       vec![0u8, 0u8, 0u8, 3u8, 4u8, 0u8, 0u8, 7u8, 8u8]
     );
 
-    buf.handle_seq(3, vec![2u8, 3u8, 4u8, 5u8, 6u8, 7u8]);
+    buf.handle_seq(2, vec![2u8, 3u8, 4u8, 5u8, 6u8, 7u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..9],
@@ -396,18 +396,18 @@ mod test {
   #[test]
   /// Consumes an entire existing interval, with both intersection
   fn test_subsume_both_intersection() {
-    let (mut buf, _) = setup(0);
+    let (mut buf, _rcv) = setup(0);
 
-    buf.handle_seq(1, vec![0u8, 1u8]);
-    buf.handle_seq(4, vec![3u8, 4u8]);
-    buf.handle_seq(8, vec![7u8, 8u8]);
+    buf.handle_seq(0, vec![0u8, 1u8]);
+    buf.handle_seq(3, vec![3u8, 4u8]);
+    buf.handle_seq(7, vec![7u8, 8u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..9],
       vec![0u8, 1u8, 0u8, 3u8, 4u8, 0u8, 0u8, 7u8, 8u8]
     );
 
-    buf.handle_seq(2, vec![1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8]);
+    buf.handle_seq(1, vec![1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8]);
 
     assert_eq!(
       buf.buf.read().unwrap().clone()[0..9],
