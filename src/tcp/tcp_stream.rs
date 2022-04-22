@@ -28,10 +28,14 @@ pub enum TcpStreamState {
   Closing,
 }
 
+#[derive(Debug)]
 pub(super) enum StreamSendThreadMsg {
   /// sequence number, data
   Outgoing(u32, Vec<u8>),
   Ack(u32),
+
+  /// Sent in the case the stream has shutdown (i.e. we've sent too many retries with no acks)
+  Shutdown,
 }
 
 #[derive(Debug)]
@@ -165,7 +169,7 @@ impl TcpStream {
   }
 
   /// Called by TcpLayer
-  pub fn recv(&mut self, num_bytes: usize) -> Result<Vec<u8>> {
+  pub fn recv(&mut self, num_bytes: usize, should_block: bool) -> Result<Vec<u8>> {
     let mut data = vec![0u8; num_bytes];
     self.recv_buffer.read_data(&mut data)?;
     Ok(data)
@@ -187,6 +191,11 @@ impl TcpStream {
             edebug!("Failed to send {ack_num} for data");
             break;
           }
+        }
+        Ok(StreamSendThreadMsg::Shutdown) => {
+          edebug!("Closing streams send thread due to Shutdown");
+          // TODO: initiate actual shutdown process
+          break;
         }
         Err(_) => {
           edebug!("Closing streams send thread");
@@ -227,6 +236,12 @@ impl TcpStream {
               // TODO: check packet.acknowledgment_number and where to keep track of current ack?
               // Needs sliding window??
               if tcp_header.ack {
+                if let Err(_) = stream
+                  .send_buffer
+                  .handle_ack(tcp_header.acknowledgment_number, tcp_header.window_size)
+                {
+                  edebug!("Failed to handle ack");
+                }
                 stream.state = TcpStreamState::Established;
               }
             }
@@ -240,6 +255,12 @@ impl TcpStream {
                 stream
                   .recv_buffer
                   .set_initial_seq_num(tcp_header.sequence_number.wrapping_add(1));
+                if let Err(_) = stream
+                  .send_buffer
+                  .handle_ack(tcp_header.acknowledgment_number, tcp_header.window_size)
+                {
+                  edebug!("Failed to handle ack");
+                }
                 stream.set_source_ip(ip_header.destination.into());
                 match stream.send_ack(ip, port) {
                   Ok(()) => {
@@ -265,9 +286,12 @@ impl TcpStream {
               if tcp_header.ack {
                 if let Err(_) = stream
                   .send_buffer
-                  .handle_ack(tcp_header.acknowledgment_number)
+                  .handle_ack(tcp_header.acknowledgment_number, tcp_header.window_size)
                 {
                   edebug!("Failed to handle ack");
+                  // TODO: this means that the send buffer has closed and we should initiate the
+                  // shutdown process
+                  return;
                 }
               }
               stream

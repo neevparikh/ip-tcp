@@ -148,11 +148,11 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
     }
     "send" | "s" => {
       let (socket_id, data) = parse_send_args(tokens)?;
-      tcp_layer.send(socket_id, data);
+      tcp_layer.send(socket_id, data)?;
     }
     "recv" | "r" => {
       let (socket_id, numbytes, should_block) = parse_recv_args(tokens)?;
-      tcp_layer.recv(socket_id, numbytes, should_block);
+      tcp_layer.recv(socket_id, numbytes, should_block)?;
     }
     "shutdown" | "sd" => {
       let (socket_id, shutdown_method) = parse_shutdown_args(tokens)?;

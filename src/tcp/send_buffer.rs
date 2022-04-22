@@ -11,6 +11,7 @@ use super::{MAX_WINDOW_SIZE, MTU, TCP_BUF_SIZE};
 use crate::{debug, edebug, IpPacket};
 
 const RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_RETRIES: u8 = 4;
 
 #[derive(Debug)]
 struct WindowElement {
@@ -21,16 +22,18 @@ struct WindowElement {
 
 #[derive(Debug)]
 struct SendWindow {
-  pub elems:           VecDeque<WindowElement>,
+  pub elems:            VecDeque<WindowElement>,
   /// Refers to the first byte refered to by the first element of the sliding_window
   /// This should in general correspond to the last ack number received
-  starting_sequence:   u32,
+  starting_sequence:    u32,
   /// Number of bytes currently referenced by elements in the window
-  pub bytes_in_window: usize,
-  /// TODO: when is this increased
-  pub max_size:        usize,
+  pub bytes_in_window:  usize,
+  /// max_size is the max we are willing to send
+  pub max_size:         usize,
+  /// recv_window_size is the max they are willing to recveive
+  pub recv_window_size: u16,
   /// Next timeout
-  pub next_timeout:    Option<Instant>,
+  pub next_timeout:     Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -66,7 +69,8 @@ impl SendBuffer {
         starting_sequence: initial_sequence_number + 1,
         elems:             VecDeque::with_capacity(MAX_WINDOW_SIZE),
         bytes_in_window:   0usize,
-        max_size:          MTU as usize, // TODO: what should this be
+        max_size:          TCP_BUF_SIZE, // TODO: what should this be to start
+        recv_window_size:  0,            // This will be initialized when we receive SYNACK/ACK
         next_timeout:      None,
       })),
 
@@ -78,10 +82,9 @@ impl SendBuffer {
     buf
   }
 
-  /// TODO: write test for off by ones on wrapping stuff
-  pub fn handle_ack(&self, ack_num: u32) -> Result<()> {
+  pub fn handle_ack(&self, ack_num: u32, window_size: u16) -> Result<()> {
     let mut window = self.window.write().unwrap();
-    let bytes_acked = window.handle_ack(ack_num);
+    let bytes_acked = window.handle_ack(ack_num, window_size);
     if bytes_acked > 0u32 {
       self.buf.write().unwrap().ack(bytes_acked);
       self.wake_send_thread_tx.send(())?;
@@ -89,12 +92,12 @@ impl SendBuffer {
     Ok(())
   }
 
-  /// blocks if no space TODO
-  pub fn write_data(&self, data: &[u8]) -> Result<()> {
+  /// Returns number of bytes written
+  pub fn write_data(&self, data: &[u8]) -> Result<usize> {
     let mut buf = self.buf.write().unwrap();
-    buf.write(data);
+    let bytes_written = buf.write(data);
     self.wake_send_thread_tx.send(())?;
-    Ok(())
+    Ok(bytes_written)
   }
 
   /// This thread checks what the shortest time in the window currently is, sleeps for that long,
@@ -167,32 +170,53 @@ impl SendBuffer {
       let mut curr_seq = window.starting_sequence;
       for elem in window.elems.iter_mut() {
         if elem.time_to_retry < now {
-          stream_send_tx.send(StreamSendThreadMsg::Outgoing(
+          debug!("Sending retry");
+          let send_res = stream_send_tx.send(StreamSendThreadMsg::Outgoing(
             curr_seq,
             Vec::from_iter(buf.read(curr_seq, elem.size as usize).copied()),
           ));
-          // TODO: connection should close if this ever gets too high
+
+          if send_res.is_err() {
+            debug!("Sending to stream failed in SendBuffer, closing");
+            return;
+          }
+
           elem.num_retries += 1;
+          if elem.num_retries > MAX_RETRIES {
+            // ignore error since we are already closing
+            debug!("MAX_RETRIES exceeded, closing SendBuffer");
+            let _ = stream_send_tx.send(StreamSendThreadMsg::Shutdown);
+            return;
+          }
+
           elem.time_to_retry = now + RETRY_INTERVAL;
         }
         curr_seq = curr_seq.wrapping_add(elem.size);
       }
 
-      // TODO: we will eventually need to know the receivers window size
       let mut distance_to_end = match buf.dist_to_end_from_seq(curr_seq) {
         Some(d) => d,
         None => continue,
       };
 
-      while window.bytes_in_window <= window.max_size && distance_to_end > 0 {
+      let max_window_size = window.max_size.min(window.recv_window_size as usize);
+
+      while dbg!(window.bytes_in_window) < dbg!(max_window_size) && distance_to_end > 0 {
         debug!("Sending up a level");
-        let bytes_left_to_send = window.max_size - window.bytes_in_window;
+        let bytes_left_to_send = max_window_size - window.bytes_in_window;
         let bytes_to_send = bytes_left_to_send.min(MTU).min(distance_to_end);
-        stream_send_tx.send(StreamSendThreadMsg::Outgoing(
+        let send_res = stream_send_tx.send(StreamSendThreadMsg::Outgoing(
           curr_seq,
           Vec::from_iter(buf.read(curr_seq, bytes_to_send).copied()),
         ));
+
+        if send_res.is_err() {
+          debug!("Sending to stream failed in SendBuffer, closing");
+          return;
+        }
+
         window.bytes_in_window += bytes_to_send;
+        window.recv_window_size -= bytes_to_send as u16;
         curr_seq = curr_seq.wrapping_add(bytes_to_send as u32);
         distance_to_end -= bytes_to_send;
         window.elems.push_back(WindowElement {
@@ -201,15 +225,21 @@ impl SendBuffer {
           size:          bytes_to_send as u32,
         });
       }
-      wake_timeout_thread_tx.send(());
+
+      if wake_timeout_thread_tx.send(()).is_err() {
+        // ignore error since we are already closing
+        debug!("timeout thread is dead, closing send_thread, sending Shutdown to stream");
+        let _ = stream_send_tx.send(StreamSendThreadMsg::Shutdown);
+        return;
+      }
     });
   }
 }
 
 impl SendWindow {
   /// Returns the number of bytes popped off of the window
-  pub fn handle_ack(&mut self, ack_num: u32) -> u32 {
-    // TODO: is there a slicker way to do this
+  pub fn handle_ack(&mut self, ack_num: u32, window_size: u16) -> u32 {
+    self.recv_window_size = window_size;
     let window_start = self.starting_sequence;
     let window_end = window_start.wrapping_add(self.bytes_in_window.try_into().unwrap());
     let in_window_no_wrapping = ack_num > window_start && ack_num <= window_end;
@@ -247,15 +277,20 @@ impl SendWindow {
     }
 
     self.starting_sequence += bytes_popped;
+    self.bytes_in_window -= bytes_popped as usize;
     return bytes_popped;
   }
 }
 
 impl SendData {
-  pub fn write(&mut self, data: &[u8]) {
-    let left = TCP_BUF_SIZE - self.data.len();
-    debug_assert!(data.len() <= left);
-    self.data.extend(data);
+  pub fn write(&mut self, data: &[u8]) -> usize {
+    let left = self.remaining_capacity();
+    if data.len() <= left {
+      self.data.extend(data);
+    } else {
+      self.data.extend(&data[0..left]);
+    }
+    return left.min(data.len());
   }
 
   /// reads from buffer
@@ -287,6 +322,10 @@ impl SendData {
       Some(end.wrapping_sub(seq_number) as usize)
     }
   }
+
+  pub fn remaining_capacity(&self) -> usize {
+    TCP_BUF_SIZE - self.data.len()
+  }
 }
 
 #[cfg(test)]
@@ -297,15 +336,16 @@ mod test {
 
   fn setup() -> (SendBuffer, Receiver<StreamSendThreadMsg>) {
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
-    (SendBuffer::new(send_thread_tx.clone(), 0), send_thread_rx)
+    let buf = SendBuffer::new(send_thread_tx.clone(), 0);
+    let _ = buf.handle_ack(0, u16::max_value());
+    (buf, send_thread_rx)
   }
 
   fn setup_initial_seq(initial_seq: u32) -> (SendBuffer, Receiver<StreamSendThreadMsg>) {
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
-    (
-      SendBuffer::new(send_thread_tx.clone(), initial_seq),
-      send_thread_rx,
-    )
+    let buf = SendBuffer::new(send_thread_tx.clone(), initial_seq);
+    buf.handle_ack(initial_seq, u16::max_value());
+    (buf, send_thread_rx)
   }
 
   fn recv_data(rx: &Receiver<StreamSendThreadMsg>, expected_seq: u32, expected_data: &[u8]) {
@@ -322,18 +362,20 @@ mod test {
 
   fn recv_retry(rx: &Receiver<StreamSendThreadMsg>, expected_seq: u32, expected_data: &[u8]) {
     match rx.recv_timeout(RETRY_INTERVAL * 2) {
+      Ok(StreamSendThreadMsg::Shutdown) => panic!("Received unexpected shutdown"),
       Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
         assert_eq!(seq_num, expected_seq);
         assert_eq!(recv_data, expected_data);
       }
       Ok(_) => panic!("Unexpected mesg from send buffer"),
-      Err(RecvTimeoutError::Timeout) => panic!("Didn't receive expected msg"),
+      Err(RecvTimeoutError::Timeout) => panic!("Didn't receive expected retry"),
       Err(RecvTimeoutError::Disconnected) => panic!("This should not error"),
     }
   }
 
   fn recv_no_retry(rx: &Receiver<StreamSendThreadMsg>) {
     match rx.recv_timeout(RETRY_INTERVAL * 2) {
+      Ok(StreamSendThreadMsg::Shutdown) => panic!("Received unexpected shutdown"),
       Ok(_) => panic!("Retransmitted despite ack"),
       Err(RecvTimeoutError::Timeout) => (),
       Err(RecvTimeoutError::Disconnected) => panic!("Channel closed"),
@@ -376,7 +418,7 @@ mod test {
     send_buf.write_data(&data).unwrap();
     recv_data(&send_thread_rx, 1u32, &data);
 
-    send_buf.handle_ack(5).unwrap();
+    send_buf.handle_ack(5, u16::max_value()).unwrap();
 
     recv_no_retry(&send_thread_rx);
   }
@@ -388,7 +430,7 @@ mod test {
     send_buf.write_data(&data).unwrap();
     recv_data(&send_thread_rx, 1u32, &data);
 
-    send_buf.handle_ack(2).unwrap();
+    send_buf.handle_ack(2, u16::max_value()).unwrap();
     recv_retry(&send_thread_rx, 2u32, &[2u8, 3u8, 4u8]);
   }
 
@@ -406,5 +448,40 @@ mod test {
     let data = vec![3u8];
     send_buf.write_data(&data).unwrap();
     recv_data(&send_thread_rx, 1, &data);
+  }
+
+  #[test]
+  fn test_write_too_much() {
+    let (send_buf, _) = setup();
+    let data = [0u8; 1 << 17];
+    let bytes_writen = send_buf.write_data(&data).unwrap();
+    assert!(bytes_writen == TCP_BUF_SIZE);
+  }
+
+  #[test]
+  fn test_send_big() {
+    let (send_buf, send_thread_rx) = setup();
+    let data = [0u8; MTU * 3 + 4];
+    send_buf.write_data(&data).unwrap();
+    recv_data(&send_thread_rx, 1, &data[0..MTU]);
+    recv_data(&send_thread_rx, (MTU as u32) + 1, &data[MTU..2 * MTU]);
+    recv_data(
+      &send_thread_rx,
+      (2 * MTU) as u32 + 1,
+      &data[2 * MTU..3 * MTU],
+    );
+    recv_data(&send_thread_rx, (3 * MTU) as u32 + 1, &data[3 * MTU..]);
+  }
+
+  #[test]
+  fn test_send_big_small_window() {
+    let (send_buf, send_thread_rx) = setup();
+    assert!(send_buf.handle_ack(1, MTU as u16).is_ok());
+    let data = [0u8; MTU * 2];
+    send_buf.write_data(&data).unwrap();
+    recv_data(&send_thread_rx, 1, &data[0..MTU]);
+    recv_retry(&send_thread_rx, 1, &data[0..MTU]);
+    assert!(send_buf.handle_ack((MTU as u32) + 1, MTU as u16).is_ok());
+    recv_data(&send_thread_rx, (MTU as u32) + 1, &data[MTU..2 * MTU]);
   }
 }

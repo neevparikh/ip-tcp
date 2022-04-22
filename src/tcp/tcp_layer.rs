@@ -145,7 +145,7 @@ impl TcpLayer {
     match streams.get(socket_id) {
       Some(stream) => {
         let mut stream = stream.lock().unwrap();
-        let data = stream.recv(numbytes)?; // TODO what to do with this?
+        let data = stream.recv(numbytes, should_block)?; // TODO what to do with this?
         debug!("Got {:?}", std::str::from_utf8(&data));
         Ok(())
       }
