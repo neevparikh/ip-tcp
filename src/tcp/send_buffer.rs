@@ -201,7 +201,7 @@ impl SendBuffer {
 
       let max_window_size = window.max_size.min(window.recv_window_size as usize);
 
-      while dbg!(window.bytes_in_window) < dbg!(max_window_size) && distance_to_end > 0 {
+      while window.bytes_in_window < max_window_size && distance_to_end > 0 {
         debug!("Sending up a level");
         let bytes_left_to_send = max_window_size - window.bytes_in_window;
         let bytes_to_send = bytes_left_to_send.min(MTU).min(distance_to_end);

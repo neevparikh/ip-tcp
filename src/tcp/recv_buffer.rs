@@ -48,8 +48,7 @@ impl RecvBuffer {
 
   /// Read data into buffer, until buffer is full. TODO: Block until data is available to read
   pub fn read_data(&mut self, data: &mut [u8]) -> Result<()> {
-    if dbg!(self.window_data.left_index.load(Ordering::SeqCst) - self.window_data.reader_index)
-      as usize
+    if (self.window_data.left_index.load(Ordering::SeqCst) - self.window_data.reader_index) as usize
       >= data.len()
     {
       let mut ready_slice = self.buf.read().unwrap()[self.window_data.reader_index as usize
@@ -162,14 +161,6 @@ impl RecvBuffer {
         (l, r)
       };
 
-      if let Err(_) = self
-        .stream_send_tx
-        .send(StreamSendThreadMsg::Ack(seq_num.wrapping_add(1)))
-      {
-        edebug!("Could not send message to tcp_stream via stream_send_tx...");
-        return;
-      }
-
       self
         .window_data
         .left_index
@@ -181,6 +172,17 @@ impl RecvBuffer {
           }
         })
         .ok();
+
+      if let Err(_) = self.stream_send_tx.send(StreamSendThreadMsg::Ack(
+        self
+          .window_data
+          .left_index
+          .load(Ordering::SeqCst)
+          .wrapping_add(self.window_data.initial_sequence_number.unwrap()),
+      )) {
+        edebug!("Could not send message to tcp_stream via stream_send_tx...");
+        return;
+      }
     } else {
       debug!("Out of order seq_num - TODO: accept wrapping");
     }

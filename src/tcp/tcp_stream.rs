@@ -181,13 +181,13 @@ impl TcpStream {
     thread::spawn(move || loop {
       match send_thread_rx.recv() {
         Ok(StreamSendThreadMsg::Outgoing(seq_num, data)) => {
-          if let Err(e) = tcp_stream.lock().unwrap().send_data(seq_num, data) {
+          if let Err(_e) = tcp_stream.lock().unwrap().send_data(seq_num, data) {
             edebug!("Failed to send data with seq_num {seq_num}");
             break;
           }
         }
         Ok(StreamSendThreadMsg::Ack(ack_num)) => {
-          if let Err(e) = tcp_stream.lock().unwrap().send_ack_for_data(ack_num) {
+          if let Err(_e) = tcp_stream.lock().unwrap().send_ack_for_data(ack_num) {
             edebug!("Failed to send {ack_num} for data");
             break;
           }
@@ -294,9 +294,11 @@ impl TcpStream {
                   return;
                 }
               }
-              stream
-                .recv_buffer
-                .handle_seq(tcp_header.sequence_number, data);
+              if data.len() > 0 {
+                stream
+                  .recv_buffer
+                  .handle_seq(tcp_header.sequence_number, data);
+              }
             }
             TcpStreamState::Closed => {
               edebug!("Packet received in Closed state: This should never probably never happen?");
