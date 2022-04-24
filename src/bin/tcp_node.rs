@@ -10,7 +10,6 @@ use ip_tcp::misc::lnx_config::LnxConfig;
 use ip_tcp::tcp::socket::{SocketId, SocketSide};
 use ip_tcp::tcp::tcp_layer::TcpLayer;
 use ip_tcp::tcp::Port;
-use ip_tcp::InterfaceId;
 use shellwords;
 
 #[derive(Parser, Debug)]

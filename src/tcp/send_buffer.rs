@@ -1,6 +1,6 @@
 use std::collections::{vec_deque, VecDeque};
 use std::sync::mpsc::{self, Receiver, SendError, Sender};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -44,7 +44,8 @@ struct SendData {
 
 #[derive(Debug)]
 pub(super) struct SendBuffer {
-  buf: Arc<RwLock<SendData>>,
+  buf:      Arc<Mutex<SendData>>,
+  buf_cond: Arc<Condvar>,
 
   /// Fields for sliding window
   window:              Arc<RwLock<SendWindow>>,
@@ -58,13 +59,17 @@ impl SendBuffer {
   ) -> SendBuffer {
     let (wake_send_thread_tx, wake_send_thread_rx) = mpsc::channel();
     let (wake_timeout_thread_tx, wake_timeout_thread_rx) = mpsc::channel();
+    let first_seq = initial_sequence_number.wrapping_add(1);
     let buf = SendBuffer {
-      buf:    Arc::new(RwLock::new(SendData {
+      buf: Arc::new(Mutex::new(SendData {
         data:                 VecDeque::with_capacity(TCP_BUF_SIZE),
-        first_sequnce_number: initial_sequence_number + 1,
+        first_sequnce_number: first_seq,
       })),
+
+      buf_cond: Arc::new(Condvar::new()),
+
       window: Arc::new(RwLock::new(SendWindow {
-        starting_sequence: initial_sequence_number + 1,
+        starting_sequence: first_seq,
         elems:             VecDeque::with_capacity(MAX_WINDOW_SIZE),
         bytes_in_window:   0usize,
         max_size:          TCP_BUF_SIZE, // TODO: what should this be to start
@@ -83,17 +88,27 @@ impl SendBuffer {
     let mut window = self.window.write().unwrap();
     let bytes_acked = window.handle_ack(ack_num, window_size);
     if bytes_acked > 0u32 {
-      self.buf.write().unwrap().ack(bytes_acked);
+      self.buf.lock().unwrap().ack(bytes_acked);
+      self.buf_cond.notify_one();
       self.wake_send_thread()?;
     };
     Ok(())
   }
 
-  /// Returns number of bytes written
+  /// Blocks until all bytes written
+  /// TODO: what is stream shuts down before we finish?
+  /// TODO: Should never have multiple threads calling this function
   pub fn write_data(&self, data: &[u8]) -> Result<usize> {
-    let mut buf = self.buf.write().unwrap();
-    let bytes_written = buf.write(data);
-    self.wake_send_thread()?;
+    let mut bytes_written = 0;
+    while bytes_written < data.len() {
+      let buf = self.buf.lock().unwrap();
+      let mut buf = self
+        .buf_cond
+        .wait_while(buf, |buf| buf.remaining_capacity() == 0)
+        .unwrap();
+      bytes_written += buf.write(&data[bytes_written..]);
+      self.wake_send_thread()?;
+    }
     Ok(bytes_written)
   }
 
@@ -160,7 +175,7 @@ impl SendBuffer {
       }
 
       let mut window = window.write().unwrap();
-      let buf = buf.read().unwrap();
+      let buf = buf.lock().unwrap();
 
       // handle timeouts
       let now = Instant::now();
@@ -333,6 +348,8 @@ impl SendData {
 mod test {
   use std::sync::mpsc::RecvTimeoutError;
 
+  use ntest::timeout;
+
   use super::*;
 
   fn setup() -> (SendBuffer, Receiver<StreamSendThreadMsg>) {
@@ -354,6 +371,25 @@ mod test {
       Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
         assert_eq!(seq_num, expected_seq);
         assert_eq!(recv_data, expected_data);
+      }
+      Ok(_) => panic!("Unexpected mesg from send buffer"),
+      Err(RecvTimeoutError::Timeout) => panic!("Didn't receive expected msg"),
+      Err(RecvTimeoutError::Disconnected) => panic!("This should not error"),
+    }
+  }
+
+  /// This is the same as recv data except that we are allowed to recv only a subset of data
+  fn recv_data_any_size(
+    rx: &Receiver<StreamSendThreadMsg>,
+    expected_seq: u32,
+    expected_data: &[u8],
+  ) -> usize {
+    match rx.recv_timeout(Duration::from_millis(100)) {
+      Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
+        assert_eq!(seq_num, expected_seq);
+        assert!(recv_data.len() <= expected_data.len());
+        assert_eq!(recv_data, expected_data[..recv_data.len()]);
+        recv_data.len()
       }
       Ok(_) => panic!("Unexpected mesg from send buffer"),
       Err(RecvTimeoutError::Timeout) => panic!("Didn't receive expected msg"),
@@ -452,14 +488,6 @@ mod test {
   }
 
   #[test]
-  fn test_write_too_much() {
-    let (send_buf, _) = setup();
-    let data = [0u8; 1 << 17];
-    let bytes_writen = send_buf.write_data(&data).unwrap();
-    assert!(bytes_writen == TCP_BUF_SIZE);
-  }
-
-  #[test]
   fn test_send_big() {
     let (send_buf, send_thread_rx) = setup();
     let data = [0u8; MTU * 3 + 4];
@@ -484,5 +512,31 @@ mod test {
     recv_retry(&send_thread_rx, 1, &data[0..MTU]);
     assert!(send_buf.handle_ack((MTU as u32) + 1, MTU as u16).is_ok());
     recv_data(&send_thread_rx, (MTU as u32) + 1, &data[MTU..2 * MTU]);
+  }
+
+  #[test]
+  #[timeout(1000)]
+  fn test_send_blocking_write() {
+    let (send_buf, send_thread_rx) = setup();
+    let send_buf = Arc::new(send_buf);
+    let send_buf_clone = send_buf.clone();
+    const DATA_SIZE: usize = TCP_BUF_SIZE * 2 + 3;
+    let data = [0u8; DATA_SIZE];
+    let data_clone = data.clone();
+    let send_handle = thread::spawn(move || {
+      send_buf.write_data(&data).unwrap();
+    });
+    let recv_handle = thread::spawn(move || {
+      let mut bytes_received = 0;
+      let mut ack = 1;
+      while bytes_received < DATA_SIZE {
+        let n = recv_data_any_size(&send_thread_rx, ack, &data_clone[0..MTU]);
+        bytes_received += n;
+        ack = (bytes_received + 1) as u32;
+        assert!(send_buf_clone.handle_ack(ack, u16::max_value()).is_ok());
+      }
+    });
+    assert!(send_handle.join().is_ok());
+    assert!(recv_handle.join().is_ok());
   }
 }
