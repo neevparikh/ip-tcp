@@ -7,11 +7,11 @@ use anyhow::{anyhow, Result};
 use etherparse::{Ipv4Header, TcpHeader};
 
 use super::socket::{SocketId, SocketSide};
-use super::tcp_stream::{LockedTcpStream, TcpStream};
-use super::{IpTcpPacket, Port, TcpPacket};
+use super::tcp_stream::TcpStream;
+use super::{IpTcpPacket, Port};
 use crate::{debug, edebug, HandlerFunction, IpPacket};
 
-type StreamMap = Arc<RwLock<Vec<LockedTcpStream>>>;
+type StreamMap = Arc<RwLock<Vec<Arc<TcpStream>>>>;
 
 #[derive(Debug)]
 pub struct TcpLayer {
@@ -48,14 +48,13 @@ impl TcpLayer {
             let stream: Vec<_> = streams
               .iter()
               .filter(|&s| {
-                let src_port = s.lock().unwrap().source_port();
+                let src_port = s.source_port();
                 src_port == dst_port
               })
               .collect();
             // TODO handle this better -> what if there are no streams that match
             debug_assert_eq!(stream.len(), 1);
-            let mut stream = stream[0].lock().unwrap();
-            match stream.process((ip_header, tcp_header, data)) {
+            match stream[0].process((ip_header, tcp_header, data)) {
               Ok(()) => (),
               Err(_e) => {
                 debug!("Exiting...");
@@ -99,7 +98,6 @@ impl TcpLayer {
   pub fn print_sockets(&self) {
     let streams = self.streams.read().unwrap();
     for (i, stream) in streams.iter().enumerate() {
-      let stream = stream.lock().unwrap();
       println!(
         "Socket {i} - src: {:?}:{}, dst: {:?}, state: {:?}",
         stream.source_ip(),
@@ -116,7 +114,7 @@ impl TcpLayer {
 
   pub fn accept(&self, port: Port) {
     let stream = TcpStream::listen(port, self.ip_send_tx.clone());
-    self.streams.write().unwrap().push(stream);
+    self.streams.write().unwrap().push(Arc::new(stream));
   }
 
   pub fn connect(&self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr, dst_port: Port) {
@@ -125,14 +123,13 @@ impl TcpLayer {
     // TODO: pass error back up?
     let stream =
       TcpStream::connect(src_ip, source_ip, dst_ip, dst_port, self.ip_send_tx.clone()).unwrap();
-    self.streams.write().unwrap().push(stream);
+    self.streams.write().unwrap().push(Arc::new(stream));
   }
 
   pub fn send(&self, socket_id: SocketId, data: Vec<u8>) -> Result<()> {
     let streams = self.streams.read().unwrap();
     match streams.get(socket_id) {
       Some(stream) => {
-        let stream = stream.lock().unwrap();
         stream.send(&data)?;
         Ok(())
       }
@@ -144,7 +141,6 @@ impl TcpLayer {
     let streams = self.streams.read().unwrap();
     match streams.get(socket_id) {
       Some(stream) => {
-        let mut stream = stream.lock().unwrap();
         let data = stream.recv(numbytes, should_block)?; // TODO what to do with this?
         debug!("Got {:?}", std::str::from_utf8(&data));
         Ok(())

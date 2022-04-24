@@ -25,7 +25,7 @@ struct RecvWindow {
 
 #[derive(Debug)]
 pub(super) struct RecvBuffer {
-  buf:            Arc<RwLock<Vec<u8>>>,
+  buf:            Vec<u8>,
   window_data:    RecvWindow,
   stream_send_tx: Sender<StreamSendThreadMsg>,
 }
@@ -33,7 +33,7 @@ pub(super) struct RecvBuffer {
 impl RecvBuffer {
   pub fn new(stream_send_tx: Sender<StreamSendThreadMsg>) -> RecvBuffer {
     RecvBuffer {
-      buf: Arc::new(RwLock::new(vec![0u8; TCP_BUF_SIZE])),
+      buf: vec![0u8; TCP_BUF_SIZE],
       stream_send_tx,
       window_data: RecvWindow {
         initial_sequence_number: None,
@@ -51,7 +51,7 @@ impl RecvBuffer {
     if (self.window_data.left_index.load(Ordering::SeqCst) - self.window_data.reader_index) as usize
       >= data.len()
     {
-      let mut ready_slice = self.buf.read().unwrap()[self.window_data.reader_index as usize
+      let mut ready_slice = self.buf[self.window_data.reader_index as usize
         ..(self.window_data.reader_index as usize) + data.len()]
         .to_vec();
       data.swap_with_slice(&mut ready_slice);
@@ -96,9 +96,8 @@ impl RecvBuffer {
         win.starts.insert(s, e);
         win.ends.insert(e, s);
 
-        let mut buf = self.buf.write().unwrap();
         debug_assert_eq!((e - s) as usize, data.len());
-        buf[s as usize..e as usize].swap_with_slice(&mut data);
+        self.buf[s as usize..e as usize].swap_with_slice(&mut data);
 
         (s, e)
       } else if starts.len() > 0 && ends.len() == 0 {
@@ -112,9 +111,8 @@ impl RecvBuffer {
         win.starts.insert(s, existing_e);
         win.ends.insert(existing_e, s);
 
-        let mut buf = self.buf.write().unwrap();
         debug_assert!(((existing_s - s) as usize) <= data.len());
-        buf[s as usize..existing_s as usize]
+        self.buf[s as usize..existing_s as usize]
           .swap_with_slice(&mut data[..(existing_s - s) as usize]);
 
         (s, existing_e)
@@ -129,9 +127,8 @@ impl RecvBuffer {
         win.starts.insert(existing_s, e);
         win.ends.insert(e, existing_s);
 
-        let mut buf = self.buf.write().unwrap();
         debug_assert!(((e - existing_e) as usize) <= data.len());
-        buf[existing_e as usize..e as usize]
+        self.buf[existing_e as usize..e as usize]
           .swap_with_slice(&mut data[(existing_e - s) as usize..]);
 
         (existing_s, e)
@@ -155,8 +152,7 @@ impl RecvBuffer {
         win.starts.insert(l, r);
         win.ends.insert(r, l);
 
-        let mut buf = self.buf.write().unwrap();
-        buf[s as usize..e as usize].swap_with_slice(&mut data);
+        self.buf[s as usize..e as usize].swap_with_slice(&mut data);
 
         (l, r)
       };
@@ -210,10 +206,7 @@ mod test {
     buf.handle_seq(2, vec![2u8, 3u8]);
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 4);
 
-    assert_eq!(
-      buf.buf.read().unwrap().clone()[0..4],
-      vec![0u8, 1u8, 2u8, 3u8]
-    );
+    assert_eq!(buf.buf.clone()[0..4], vec![0u8, 1u8, 2u8, 3u8]);
   }
 
   #[test]
@@ -225,14 +218,14 @@ mod test {
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
 
     assert_eq!(
-      buf.buf.read().unwrap().clone()[0..9],
+      buf.buf.clone()[0..9],
       vec![0u8, 1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 7u8, 8u8]
     );
 
     buf.handle_seq(3, vec![3u8, 4u8]);
 
     assert_eq!(
-      buf.buf.read().unwrap().clone()[0..9],
+      buf.buf.clone()[0..9],
       vec![0u8, 1u8, 0u8, 3u8, 4u8, 0u8, 0u8, 7u8, 8u8]
     );
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
@@ -246,17 +239,11 @@ mod test {
     buf.handle_seq(4, vec![4u8, 5u8]);
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
 
-    assert_eq!(
-      buf.buf.read().unwrap().clone()[0..6],
-      vec![0u8, 1u8, 0u8, 0u8, 4u8, 5u8]
-    );
+    assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 0u8, 0u8, 4u8, 5u8]);
 
     buf.handle_seq(2, vec![2u8, 3u8]);
 
-    assert_eq!(
-      buf.buf.read().unwrap().clone()[0..6],
-      vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8]
-    );
+    assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8]);
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 6);
   }
 
@@ -266,17 +253,11 @@ mod test {
     buf.handle_seq(0, vec![0u8, 1u8, 2u8]);
     buf.handle_seq(4, vec![4u8, 5u8]);
 
-    assert_eq!(
-      buf.buf.read().unwrap().clone()[0..6],
-      vec![0u8, 1u8, 2u8, 0u8, 4u8, 5u8]
-    );
+    assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 0u8, 4u8, 5u8]);
 
     buf.handle_seq(2, vec![2u8, 3u8]);
 
-    assert_eq!(
-      buf.buf.read().unwrap().clone()[0..6],
-      vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8]
-    );
+    assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8]);
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 6);
   }
 
@@ -286,17 +267,11 @@ mod test {
     buf.handle_seq(0, vec![0u8, 1u8]);
     buf.handle_seq(3, vec![3u8, 4u8, 5u8]);
 
-    assert_eq!(
-      buf.buf.read().unwrap().clone()[0..6],
-      vec![0u8, 1u8, 0u8, 3u8, 4u8, 5u8]
-    );
+    assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 0u8, 3u8, 4u8, 5u8]);
 
     buf.handle_seq(2, vec![2u8, 3u8]);
 
-    assert_eq!(
-      buf.buf.read().unwrap().clone()[0..6],
-      vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8]
-    );
+    assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8]);
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 6);
   }
 
@@ -306,17 +281,11 @@ mod test {
     let (mut buf, _rcv) = setup(0);
     buf.handle_seq(2, vec![2u8, 3u8]);
 
-    assert_eq!(
-      buf.buf.read().unwrap().clone()[0..6],
-      vec![0u8, 0u8, 2u8, 3u8, 0u8, 0u8]
-    );
+    assert_eq!(buf.buf.clone()[0..6], vec![0u8, 0u8, 2u8, 3u8, 0u8, 0u8]);
 
     buf.handle_seq(1, vec![1u8, 2u8, 3u8, 4u8]);
 
-    assert_eq!(
-      buf.buf.read().unwrap().clone()[0..6],
-      vec![0u8, 1u8, 2u8, 3u8, 4u8, 0u8]
-    );
+    assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 3u8, 4u8, 0u8]);
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 0);
   }
 
@@ -346,14 +315,14 @@ mod test {
     debug_assert_eq!(buf.window_data.ends[&5u32], 3u32);
 
     assert_eq!(
-      buf.buf.read().unwrap().clone()[0..9],
+      buf.buf.clone()[0..9],
       vec![0u8, 1u8, 0u8, 3u8, 4u8, 0u8, 0u8, 0u8, 0u8]
     );
 
     buf.handle_seq(1, vec![1u8, 2u8, 3u8, 4u8, 5u8]);
 
     assert_eq!(
-      buf.buf.read().unwrap().clone()[0..9],
+      buf.buf.clone()[0..9],
       vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 0u8, 0u8, 0u8]
     );
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 6);
@@ -375,14 +344,14 @@ mod test {
     buf.handle_seq(3, vec![3u8, 4u8]);
 
     assert_eq!(
-      buf.buf.read().unwrap().clone()[0..9],
+      buf.buf.clone()[0..9],
       vec![0u8, 0u8, 0u8, 3u8, 4u8, 0u8, 0u8, 7u8, 8u8]
     );
 
     buf.handle_seq(2, vec![2u8, 3u8, 4u8, 5u8, 6u8, 7u8]);
 
     assert_eq!(
-      buf.buf.read().unwrap().clone()[0..9],
+      buf.buf.clone()[0..9],
       vec![0u8, 0u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8]
     );
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 0);
@@ -405,14 +374,14 @@ mod test {
     buf.handle_seq(7, vec![7u8, 8u8]);
 
     assert_eq!(
-      buf.buf.read().unwrap().clone()[0..9],
+      buf.buf.clone()[0..9],
       vec![0u8, 1u8, 0u8, 3u8, 4u8, 0u8, 0u8, 7u8, 8u8]
     );
 
     buf.handle_seq(1, vec![1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8]);
 
     assert_eq!(
-      buf.buf.read().unwrap().clone()[0..9],
+      buf.buf.clone()[0..9],
       vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8]
     );
     debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 9);

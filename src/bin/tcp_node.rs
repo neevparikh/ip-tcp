@@ -1,5 +1,5 @@
 use std::io::{stdin, stdout, Write};
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 use std::str::FromStr;
 
 use anyhow::{anyhow, Result};

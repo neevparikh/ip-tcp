@@ -1,6 +1,6 @@
 use std::collections::{vec_deque, VecDeque};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, RwLock};
+use std::sync::mpsc::{self, Receiver, SendError, Sender};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -8,7 +8,7 @@ use anyhow::Result;
 
 use super::tcp_stream::StreamSendThreadMsg;
 use super::{MAX_WINDOW_SIZE, MTU, TCP_BUF_SIZE};
-use crate::{debug, edebug, IpPacket};
+use crate::{debug, edebug};
 
 const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_RETRIES: u8 = 4;
@@ -32,8 +32,6 @@ struct SendWindow {
   pub max_size:         usize,
   /// recv_window_size is the max they are willing to recveive
   pub recv_window_size: u16,
-  /// Next timeout
-  pub next_timeout:     Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -50,7 +48,7 @@ pub(super) struct SendBuffer {
 
   /// Fields for sliding window
   window:              Arc<RwLock<SendWindow>>,
-  wake_send_thread_tx: Sender<()>,
+  wake_send_thread_tx: Arc<Mutex<Sender<()>>>,
 }
 
 impl SendBuffer {
@@ -71,10 +69,9 @@ impl SendBuffer {
         bytes_in_window:   0usize,
         max_size:          TCP_BUF_SIZE, // TODO: what should this be to start
         recv_window_size:  0,            // This will be initialized when we receive SYNACK/ACK
-        next_timeout:      None,
       })),
 
-      wake_send_thread_tx: wake_send_thread_tx.clone(),
+      wake_send_thread_tx: Arc::new(Mutex::new(wake_send_thread_tx.clone())),
     };
 
     buf.start_send_thread(stream_send_tx, wake_send_thread_rx, wake_timeout_thread_tx);
@@ -87,7 +84,7 @@ impl SendBuffer {
     let bytes_acked = window.handle_ack(ack_num, window_size);
     if bytes_acked > 0u32 {
       self.buf.write().unwrap().ack(bytes_acked);
-      self.wake_send_thread_tx.send(())?;
+      self.wake_send_thread()?;
     };
     Ok(())
   }
@@ -96,7 +93,7 @@ impl SendBuffer {
   pub fn write_data(&self, data: &[u8]) -> Result<usize> {
     let mut buf = self.buf.write().unwrap();
     let bytes_written = buf.write(data);
-    self.wake_send_thread_tx.send(())?;
+    self.wake_send_thread()?;
     Ok(bytes_written)
   }
 
@@ -233,6 +230,10 @@ impl SendBuffer {
         return;
       }
     });
+  }
+
+  fn wake_send_thread(&self) -> Result<(), SendError<()>> {
+    self.wake_send_thread_tx.lock().unwrap().send(())
   }
 }
 
