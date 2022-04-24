@@ -47,23 +47,23 @@ impl RecvBuffer {
   }
 
   /// Read data into buffer, until buffer is full. TODO: Block until data is available to read
-  pub fn read_data(&mut self, data: &mut [u8]) -> Result<()> {
-    if (self.window_data.left_index.load(Ordering::SeqCst) - self.window_data.reader_index) as usize
-      >= data.len()
-    {
+  pub fn read_data(&mut self, data: &mut [u8]) -> Result<usize> {
+    let bytes_available =
+      (self.window_data.left_index.load(Ordering::SeqCst) - self.window_data.reader_index) as usize;
+
+    if bytes_available > 0 {
+      let data = &mut data[..bytes_available];
       let mut ready_slice = self.buf[self.window_data.reader_index as usize
-        ..(self.window_data.reader_index as usize) + data.len()]
+        ..(self.window_data.reader_index as usize) + bytes_available]
         .to_vec();
       data.swap_with_slice(&mut ready_slice);
       self.window_data.reader_index = self
         .window_data
         .reader_index
-        .wrapping_add(data.len() as u32);
-    } else {
-      // Block here
-      todo!();
+        .wrapping_add(bytes_available as u32);
     }
-    Ok(())
+
+    Ok(bytes_available)
   }
 
   pub fn set_initial_seq_num(&mut self, initial_seq: u32) {

@@ -1,9 +1,9 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::{thread, vec};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use etherparse::{Ipv4Header, TcpHeader};
 
 use super::recv_buffer::RecvBuffer;
@@ -59,8 +59,9 @@ pub struct TcpStream {
   internal: Arc<Mutex<TcpStreamInternal>>,
 
   /// data
-  recv_buffer: Arc<Mutex<RecvBuffer>>,
-  send_buffer: Arc<SendBuffer>,
+  recv_buffer:      Arc<Mutex<RecvBuffer>>,
+  recv_buffer_cond: Arc<Condvar>,
+  send_buffer:      Arc<SendBuffer>,
 
   /// TODO: how should commands like SHUTDOWN and CLOSE be passed
   /// Selecting???
@@ -93,6 +94,8 @@ impl TcpStream {
     }));
 
     let recv_buffer = Arc::new(Mutex::new(RecvBuffer::new(send_thread_tx.clone())));
+    let recv_buffer_cond = Arc::new(Condvar::new());
+
     let send_buffer = Arc::new(SendBuffer::new(
       send_thread_tx.clone(),
       initial_sequence_number,
@@ -101,6 +104,7 @@ impl TcpStream {
     TcpStream::start_listen_thread(
       internal.clone(),
       recv_buffer.clone(),
+      recv_buffer_cond.clone(),
       send_buffer.clone(),
       stream_rx,
     );
@@ -109,6 +113,7 @@ impl TcpStream {
     TcpStream {
       internal,
       recv_buffer,
+      recv_buffer_cond,
       send_buffer,
       stream_tx: Arc::new(Mutex::new(stream_tx)),
     }
@@ -181,10 +186,35 @@ impl TcpStream {
   }
 
   /// Called by TcpLayer
+  /// TODO: what is the behavior if the stream dies while blocked
   pub fn recv(&self, num_bytes: usize, should_block: bool) -> Result<Vec<u8>> {
     let mut data = vec![0u8; num_bytes];
-    self.recv_buffer.lock().unwrap().read_data(&mut data)?;
-    Ok(data)
+    let mut bytes_read = 0;
+    if should_block {
+      let buf = self.recv_buffer.lock().unwrap();
+      let _ = self
+        .recv_buffer_cond
+        .wait_while(buf, |buf| match buf.read_data(&mut data[bytes_read..]) {
+          Ok(n) => {
+            bytes_read += n;
+            bytes_read < num_bytes
+          }
+          Err(_) => false,
+        })
+        .unwrap();
+
+      if bytes_read == num_bytes {
+        Ok(data)
+      } else {
+        Err(anyhow!("Error occured during blocking read"))
+      }
+    } else {
+      let mut buf = self.recv_buffer.lock().unwrap();
+      let bytes_read = buf.read_data(&mut data)?;
+      debug_assert!(bytes_read <= num_bytes);
+      data.resize(bytes_read, 0u8);
+      Ok(data)
+    }
   }
 
   /// TODO: I'm not the biggest fan of this design because we get a huge amount of contention when
@@ -223,6 +253,7 @@ impl TcpStream {
   fn start_listen_thread(
     stream: Arc<Mutex<TcpStreamInternal>>,
     recv_buffer: Arc<Mutex<RecvBuffer>>,
+    recv_buffer_cond: Arc<Condvar>,
     send_buffer: Arc<SendBuffer>,
     stream_rx: Receiver<IpTcpPacket>,
   ) {
@@ -318,6 +349,7 @@ impl TcpStream {
                   .lock()
                   .unwrap()
                   .handle_seq(tcp_header.sequence_number, data);
+                recv_buffer_cond.notify_one();
               }
             }
             TcpStreamState::Closed => {
