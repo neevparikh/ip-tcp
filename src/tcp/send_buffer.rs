@@ -196,7 +196,7 @@ impl SendBuffer {
       // handle timeouts
       let now = Instant::now();
       let mut curr_seq = window.starting_sequence;
-      let rto = RTO_UBOUND.min(RTO_LBOUND.max(window.srtt.mul_f32(RTO_BETA)));
+      let rto = window.rto();
       for elem in window.elems.iter_mut() {
         if elem.time_to_retry < now {
           debug!("Sending retry");
@@ -389,7 +389,7 @@ mod test {
   fn setup_initial_seq(initial_seq: u32) -> (SendBuffer, Receiver<StreamSendThreadMsg>) {
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
     let buf = SendBuffer::new(send_thread_tx.clone(), initial_seq);
-    buf.handle_ack(initial_seq, u16::max_value());
+    buf.handle_ack(initial_seq, u16::max_value()).unwrap();
     (buf, send_thread_rx)
   }
 

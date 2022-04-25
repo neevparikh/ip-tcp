@@ -127,6 +127,7 @@ impl TcpLayer {
   }
 
   pub fn send(&self, socket_id: SocketId, data: Vec<u8>) -> Result<()> {
+    // TODO: check state of stream
     let streams = self.streams.read().unwrap();
     match streams.get(socket_id) {
       Some(stream) => {
@@ -138,6 +139,7 @@ impl TcpLayer {
   }
 
   pub fn recv(&self, socket_id: SocketId, numbytes: usize, should_block: bool) -> Result<()> {
+    // TODO: check state of stream
     let streams = self.streams.read().unwrap();
     match streams.get(socket_id) {
       Some(stream) => {

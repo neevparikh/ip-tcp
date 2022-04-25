@@ -71,6 +71,8 @@ impl RecvBuffer {
   }
 
   /// Handle incoming packet, with a seq_num and data, moving window appropriately.
+  ///
+  /// TODO: make this return result, in case of stream errors
   pub fn handle_seq(&mut self, seq_num: u32, mut data: Vec<u8>) {
     let size: u32 = data.len().try_into().unwrap();
     let win = &mut self.window_data;
