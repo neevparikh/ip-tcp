@@ -10,14 +10,19 @@ use super::tcp_stream::StreamSendThreadMsg;
 use super::{MAX_WINDOW_SIZE, MTU, TCP_BUF_SIZE};
 use crate::{debug, edebug};
 
-const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_RETRIES: u8 = 4;
+const RTO_LBOUND: Duration = Duration::from_millis(1);
+const RTO_UBOUND: Duration = Duration::from_secs(60);
+const RTO_BETA: f32 = 2f32;
+const SRTT_ALPHA: f32 = 0.8f32;
+const INITIAL_SRTT: Duration = Duration::from_millis(1500);
 
 #[derive(Debug)]
 struct WindowElement {
-  num_retries:   u8,
-  time_to_retry: Instant,
-  size:          u32,
+  num_retries:    u8,
+  last_time_sent: Instant,
+  time_to_retry:  Instant,
+  size:           u32,
 }
 
 #[derive(Debug)]
@@ -32,6 +37,8 @@ struct SendWindow {
   pub max_size:         usize,
   /// recv_window_size is the max they are willing to recveive
   pub recv_window_size: u16,
+  /// Smoothed Round Trip Time
+  srtt:                 Duration,
 }
 
 #[derive(Debug)]
@@ -74,6 +81,7 @@ impl SendBuffer {
         bytes_in_window:   0usize,
         max_size:          TCP_BUF_SIZE, // TODO: what should this be to start
         recv_window_size:  0,            // This will be initialized when we receive SYNACK/ACK
+        srtt:              INITIAL_SRTT,
       })),
 
       wake_send_thread_tx: Arc::new(Mutex::new(wake_send_thread_tx.clone())),
@@ -112,9 +120,17 @@ impl SendBuffer {
     Ok(bytes_written)
   }
 
+  pub fn srtt(&self) -> Duration {
+    self.window.read().unwrap().srtt
+  }
+
+  pub fn rto(&self) -> Duration {
+    self.window.read().unwrap().rto()
+  }
+
   /// This thread checks what the shortest time in the window currently is, sleeps for that long,
   /// then wakes up the send thread
-  pub fn start_timeout_thread(
+  fn start_timeout_thread(
     &self,
     wake_timeout_thread_rx: Receiver<()>,
     wake_send_thread_tx: Sender<()>,
@@ -180,6 +196,7 @@ impl SendBuffer {
       // handle timeouts
       let now = Instant::now();
       let mut curr_seq = window.starting_sequence;
+      let rto = RTO_UBOUND.min(RTO_LBOUND.max(window.srtt.mul_f32(RTO_BETA)));
       for elem in window.elems.iter_mut() {
         if elem.time_to_retry < now {
           debug!("Sending retry");
@@ -201,7 +218,8 @@ impl SendBuffer {
             return;
           }
 
-          elem.time_to_retry = now + RETRY_INTERVAL;
+          elem.last_time_sent = Instant::now();
+          elem.time_to_retry = now + (rto * 2u32.pow(elem.num_retries as u32));
         }
         curr_seq = curr_seq.wrapping_add(elem.size);
       }
@@ -232,9 +250,10 @@ impl SendBuffer {
         curr_seq = curr_seq.wrapping_add(bytes_to_send as u32);
         distance_to_end -= bytes_to_send;
         window.elems.push_back(WindowElement {
-          num_retries:   0,
-          time_to_retry: now + RETRY_INTERVAL,
-          size:          bytes_to_send as u32,
+          num_retries:    0,
+          last_time_sent: now,
+          time_to_retry:  now + rto,
+          size:           bytes_to_send as u32,
         });
       }
 
@@ -253,6 +272,10 @@ impl SendBuffer {
 }
 
 impl SendWindow {
+  pub fn rto(&self) -> Duration {
+    RTO_UBOUND.min(RTO_LBOUND.max(self.srtt.mul_f32(RTO_BETA)))
+  }
+
   /// Returns the number of bytes popped off of the window
   pub fn handle_ack(&mut self, ack_num: u32, window_size: u16) -> u32 {
     self.recv_window_size = window_size;
@@ -268,6 +291,7 @@ impl SendWindow {
     debug_assert!(bytes_acked as usize <= self.bytes_in_window);
     let mut bytes_popped = 0u32;
 
+    let now = Instant::now();
     while bytes_popped < bytes_acked {
       let curr_elem = match self.elems.pop_front() {
         Some(elem) => elem,
@@ -279,6 +303,7 @@ impl SendWindow {
 
       // handles case where ack a part of a packet
       if bytes_popped + curr_elem.size > bytes_acked {
+        // We don't update srtt here since something weird happened
         let bytes_to_ack_from_curr = bytes_acked - bytes_popped;
         debug_assert!(bytes_to_ack_from_curr < curr_elem.size);
         let mut curr_elem = curr_elem;
@@ -288,6 +313,8 @@ impl SendWindow {
         self.elems.push_front(curr_elem);
         break;
       } else {
+        let rtt = now - curr_elem.last_time_sent;
+        self.srtt = self.srtt.mul_f32(SRTT_ALPHA) + rtt.mul_f32(SRTT_ALPHA);
         bytes_popped += curr_elem.size;
       }
     }
@@ -397,8 +424,13 @@ mod test {
     }
   }
 
-  fn recv_retry(rx: &Receiver<StreamSendThreadMsg>, expected_seq: u32, expected_data: &[u8]) {
-    match rx.recv_timeout(RETRY_INTERVAL * 2) {
+  fn recv_retry(
+    rx: &Receiver<StreamSendThreadMsg>,
+    expected_seq: u32,
+    expected_data: &[u8],
+    rto: Duration,
+  ) {
+    match rx.recv_timeout(rto * 2) {
       Ok(StreamSendThreadMsg::Shutdown) => panic!("Received unexpected shutdown"),
       Ok(StreamSendThreadMsg::Outgoing(seq_num, recv_data)) => {
         assert_eq!(seq_num, expected_seq);
@@ -410,8 +442,8 @@ mod test {
     }
   }
 
-  fn recv_no_retry(rx: &Receiver<StreamSendThreadMsg>) {
-    match rx.recv_timeout(RETRY_INTERVAL * 2) {
+  fn recv_no_retry(rx: &Receiver<StreamSendThreadMsg>, rto: Duration) {
+    match rx.recv_timeout(rto * 2) {
       Ok(StreamSendThreadMsg::Shutdown) => panic!("Received unexpected shutdown"),
       Ok(_) => panic!("Retransmitted despite ack"),
       Err(RecvTimeoutError::Timeout) => (),
@@ -444,7 +476,7 @@ mod test {
     let data = vec![1u8, 2u8, 3u8, 4u8];
     send_buf.write_data(&data).unwrap();
     recv_data(&send_thread_rx, 1u32, &data);
-    recv_retry(&send_thread_rx, 1u32, &data);
+    recv_retry(&send_thread_rx, 1u32, &data, send_buf.rto());
   }
 
   /// Tests that acked bytes aren't resent
@@ -457,7 +489,7 @@ mod test {
 
     send_buf.handle_ack(5, u16::max_value()).unwrap();
 
-    recv_no_retry(&send_thread_rx);
+    recv_no_retry(&send_thread_rx, send_buf.rto());
   }
 
   #[test]
@@ -468,7 +500,7 @@ mod test {
     recv_data(&send_thread_rx, 1u32, &data);
 
     send_buf.handle_ack(2, u16::max_value()).unwrap();
-    recv_retry(&send_thread_rx, 2u32, &[2u8, 3u8, 4u8]);
+    recv_retry(&send_thread_rx, 2u32, &[2u8, 3u8, 4u8], send_buf.rto());
   }
 
   #[test]
@@ -509,7 +541,7 @@ mod test {
     let data = [0u8; MTU * 2];
     send_buf.write_data(&data).unwrap();
     recv_data(&send_thread_rx, 1, &data[0..MTU]);
-    recv_retry(&send_thread_rx, 1, &data[0..MTU]);
+    recv_retry(&send_thread_rx, 1, &data[0..MTU], send_buf.rto());
     assert!(send_buf.handle_ack((MTU as u32) + 1, MTU as u16).is_ok());
     recv_data(&send_thread_rx, (MTU as u32) + 1, &data[MTU..2 * MTU]);
   }
