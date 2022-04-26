@@ -51,12 +51,13 @@ fn parse_send_args(tokens: Vec<String>) -> Result<(SocketId, Vec<u8>)> {
 }
 
 fn parse_recv_args(tokens: Vec<String>) -> Result<(SocketId, usize, bool)> {
-  let block = if tokens.len() != 2 {
+  // tokens = [cmd_name, args...] that's why we have 3 not 2
+  let block = if tokens.len() != 3 {
     check_len(&tokens, 3)?;
     match tokens[3].as_ref() {
       "y" => true,
       "n" => false,
-      s => return Err(anyhow!("unrecognized arg {s}, expected y|n")),
+      s => return Err(anyhow!("unrecognized arg to block {s}, expected y|n")),
     }
   } else {
     false
@@ -66,7 +67,8 @@ fn parse_recv_args(tokens: Vec<String>) -> Result<(SocketId, usize, bool)> {
 }
 
 fn parse_shutdown_args(tokens: Vec<String>) -> Result<(SocketId, SocketSide)> {
-  let side = if tokens.len() != 1 {
+  // tokens = [cmd_name, args...] that's why we have 2 not 1
+  let side = if tokens.len() != 2 {
     check_len(&tokens, 2)?;
     tokens[2].parse()?
   } else {
