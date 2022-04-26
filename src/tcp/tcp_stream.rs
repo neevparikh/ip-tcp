@@ -371,10 +371,15 @@ impl TcpStream {
               }
 
               if data.len() > 0 {
-                recv_buffer
+                if let Err(e) = recv_buffer
                   .lock()
                   .unwrap()
-                  .handle_seq(tcp_header.sequence_number, data); // TODO handle result
+                  .handle_seq(tcp_header.sequence_number, data)
+                {
+                  edebug!("Failed to handle seq {e}, closing...");
+                  stream.close();
+                  return;
+                }
                 recv_buffer_cond.notify_one();
               }
             }
