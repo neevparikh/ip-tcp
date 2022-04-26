@@ -142,7 +142,7 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
       let (dst_ip, port) = parse_tcp_address(tokens)?;
       match ip_layer.get_src_from_dst(dst_ip) {
         Some(src_ip) => tcp_layer.connect(src_ip, dst_ip, port),
-        None => println!("Destination ip was not reachable"),
+        None => eprintln!("Destination ip was not reachable"),
       }
     }
     "send" | "s" => {
@@ -151,7 +151,8 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
     }
     "recv" | "r" => {
       let (socket_id, numbytes, should_block) = parse_recv_args(tokens)?;
-      tcp_layer.recv(socket_id, numbytes, should_block)?;
+      let data = tcp_layer.recv(socket_id, numbytes, should_block)?;
+      println!("{:?}", std::str::from_utf8(&data));
     }
     "shutdown" | "sd" => {
       let (socket_id, shutdown_method) = parse_shutdown_args(tokens)?;
