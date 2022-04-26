@@ -322,11 +322,11 @@ impl TcpStream {
               let ip: Ipv4Addr = ip_header.source.into();
               let port = tcp_header.source_port;
               if tcp_header.ack && tcp_header.syn {
-                stream.set_initial_ack(tcp_header.sequence_number.wrapping_add(1));
                 recv_buffer
                   .lock()
                   .unwrap()
-                  .set_initial_seq_num(stream.initial_ack.unwrap());
+                  .set_initial_seq_num(tcp_header.sequence_number);
+                stream.set_initial_ack(tcp_header.sequence_number.wrapping_add(1));
 
                 let ack_num = tcp_header.acknowledgment_number;
                 let window_size = tcp_header.window_size;
@@ -342,11 +342,11 @@ impl TcpStream {
                   Err(e) => edebug!("could not send ack? {e}"),
                 }
               } else if tcp_header.syn && !tcp_header.ack {
-                stream.set_initial_ack(tcp_header.sequence_number.wrapping_add(1));
                 recv_buffer
                   .lock()
                   .unwrap()
-                  .set_initial_seq_num(stream.initial_ack.unwrap());
+                  .set_initial_seq_num(tcp_header.sequence_number);
+                stream.set_initial_ack(tcp_header.sequence_number.wrapping_add(1));
                 stream.set_source_ip(ip_header.destination.into());
                 match stream.send_initial_ack(ip, port) {
                   Ok(()) => {
