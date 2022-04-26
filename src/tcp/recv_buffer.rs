@@ -15,10 +15,9 @@ struct RecvWindow {
   initial_sequence_number: Option<u32>,
 
   /// Refers to the index which represents the left window -- not in seq_num land
-  left_index:   AtomicU32,
+  left_index:   u32,
   /// Refers to the index where the reader is
   reader_index: u32,
-  data_ready:   Condvar,
   pub starts:   BTreeMap<u32, u32>,
   pub ends:     BTreeMap<u32, u32>,
 }
@@ -159,23 +158,14 @@ impl RecvBuffer {
         (l, r)
       };
 
-      self
-        .window_data
-        .left_index
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left_index| {
-          if left_index == l || (l..r).contains(&left_index) {
-            Some(r)
-          } else {
-            None
-          }
-        })
-        .ok();
+      if self.window_data.left_index == l || (l..r).contains(&self.window_data.left_index) {
+        self.window_data.left_index = r;
+      }
 
       if let Err(_) = self.stream_send_tx.send(StreamSendThreadMsg::Ack(
         self
           .window_data
           .left_index
-          .load(Ordering::SeqCst)
           .wrapping_add(self.window_data.initial_sequence_number.unwrap()),
       )) {
         edebug!("Could not send message to tcp_stream via stream_send_tx...");
@@ -204,9 +194,9 @@ mod test {
   fn test_adding() {
     let (mut buf, _rcv) = setup(0);
     buf.handle_seq(0, vec![0u8, 1u8]);
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
+    debug_assert_eq!(buf.window_data.left_index, 2);
     buf.handle_seq(2, vec![2u8, 3u8]);
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 4);
+    debug_assert_eq!(buf.window_data.left_index, 4);
 
     assert_eq!(buf.buf.clone()[0..4], vec![0u8, 1u8, 2u8, 3u8]);
   }
@@ -215,9 +205,9 @@ mod test {
   fn test_disjoint() {
     let (mut buf, _rcv) = setup(0);
     buf.handle_seq(0, vec![0u8, 1u8]);
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
+    debug_assert_eq!(buf.window_data.left_index, 2);
     buf.handle_seq(7, vec![7u8, 8u8]);
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
+    debug_assert_eq!(buf.window_data.left_index, 2);
 
     assert_eq!(
       buf.buf.clone()[0..9],
@@ -230,23 +220,23 @@ mod test {
       buf.buf.clone()[0..9],
       vec![0u8, 1u8, 0u8, 3u8, 4u8, 0u8, 0u8, 7u8, 8u8]
     );
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
+    debug_assert_eq!(buf.window_data.left_index, 2);
   }
 
   #[test]
   fn test_exact_interval() {
     let (mut buf, _rcv) = setup(0);
     buf.handle_seq(0, vec![0u8, 1u8]);
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
+    debug_assert_eq!(buf.window_data.left_index, 2);
     buf.handle_seq(4, vec![4u8, 5u8]);
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 2);
+    debug_assert_eq!(buf.window_data.left_index, 2);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 0u8, 0u8, 4u8, 5u8]);
 
     buf.handle_seq(2, vec![2u8, 3u8]);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8]);
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 6);
+    debug_assert_eq!(buf.window_data.left_index, 6);
   }
 
   #[test]
@@ -260,7 +250,7 @@ mod test {
     buf.handle_seq(2, vec![2u8, 3u8]);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8]);
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 6);
+    debug_assert_eq!(buf.window_data.left_index, 6);
   }
 
   #[test]
@@ -274,7 +264,7 @@ mod test {
     buf.handle_seq(2, vec![2u8, 3u8]);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8]);
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 6);
+    debug_assert_eq!(buf.window_data.left_index, 6);
   }
 
   #[test]
@@ -288,7 +278,7 @@ mod test {
     buf.handle_seq(1, vec![1u8, 2u8, 3u8, 4u8]);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 3u8, 4u8, 0u8]);
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 0);
+    debug_assert_eq!(buf.window_data.left_index, 0);
   }
 
   #[test]
@@ -327,7 +317,7 @@ mod test {
       buf.buf.clone()[0..9],
       vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 0u8, 0u8, 0u8]
     );
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 6);
+    debug_assert_eq!(buf.window_data.left_index, 6);
 
     dbg!(&buf.window_data.starts);
     dbg!(&buf.window_data.ends);
@@ -356,7 +346,7 @@ mod test {
       buf.buf.clone()[0..9],
       vec![0u8, 0u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8]
     );
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 0);
+    debug_assert_eq!(buf.window_data.left_index, 0);
 
     dbg!(&buf.window_data.starts);
     dbg!(&buf.window_data.ends);
@@ -386,7 +376,7 @@ mod test {
       buf.buf.clone()[0..9],
       vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8]
     );
-    debug_assert_eq!(buf.window_data.left_index.load(Ordering::SeqCst), 9);
+    debug_assert_eq!(buf.window_data.left_index, 9);
 
     dbg!(&buf.window_data.starts);
     dbg!(&buf.window_data.ends);
