@@ -1,9 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Condvar, RwLock};
-
-use anyhow::Result;
 
 use super::tcp_stream::StreamSendThreadMsg;
 use super::TCP_BUF_SIZE;
@@ -11,15 +7,18 @@ use crate::{debug, edebug};
 
 #[derive(Debug)]
 struct RecvWindow {
-  /// Refers to the first valid initial_sequence_number
+  /// Refers to the first valid initial_sequence_number (SEQ land)
   initial_sequence_number: Option<u32>,
-
-  /// Refers to the index which represents the left window -- not in seq_num land
-  left_index:   u32,
-  /// Refers to the index where the reader is
-  reader_index: u32,
-  pub starts:   BTreeMap<u32, u32>,
-  pub ends:     BTreeMap<u32, u32>,
+  /// Refers to the current ack (SEQ land)
+  current_ack:             Option<u32>,
+  /// Refers to the index which represents the left window (BUF land)
+  left_index:              u32,
+  /// Refers to the index where the reader is (BUF land)
+  reader_index:            u32,
+  /// Data structure of starting indices for intervals (BUF land)
+  starts:                  BTreeMap<u32, u32>,
+  /// Data structure of ending indices for intervals (BUF land)
+  ends:                    BTreeMap<u32, u32>,
 }
 
 #[derive(Debug)]
@@ -36,6 +35,7 @@ impl RecvBuffer {
       stream_send_tx,
       window_data: RecvWindow {
         initial_sequence_number: None,
+        current_ack:             None,
         left_index:              0,
         reader_index:            0,
         starts:                  BTreeMap::new(),
@@ -64,7 +64,9 @@ impl RecvBuffer {
   }
 
   pub fn set_initial_seq_num(&mut self, initial_seq: u32) {
-    self.window_data.initial_sequence_number = Some(initial_seq);
+    // accounts for SYN increment
+    self.window_data.initial_sequence_number = Some(initial_seq.wrapping_add(1));
+    self.window_data.current_ack = Some(initial_seq.wrapping_add(1));
   }
 
   /// Handle incoming packet, with a seq_num and data, moving window appropriately.
@@ -157,14 +159,18 @@ impl RecvBuffer {
       };
 
       if self.window_data.left_index == l || (l..r).contains(&self.window_data.left_index) {
-        self.window_data.left_index = r;
+        self.window_data.current_ack = Some(
+          self
+            .window_data
+            .current_ack
+            .unwrap()
+            .wrapping_add(r.wrapping_sub(self.window_data.left_index)),
+        );
+        self.window_data.left_index = r; // TODO: needs to wrap
       }
 
       if let Err(_) = self.stream_send_tx.send(StreamSendThreadMsg::Ack(
-        self
-          .window_data
-          .left_index
-          .wrapping_add(self.window_data.initial_sequence_number.unwrap()),
+        self.window_data.current_ack.unwrap(),
       )) {
         edebug!("Could not send message to tcp_stream via stream_send_tx...");
         return;
@@ -179,6 +185,8 @@ impl RecvBuffer {
 mod test {
   use std::sync::mpsc::{channel, Receiver};
 
+  use ntest::timeout;
+
   use super::*;
 
   fn setup(initial_seq: u32) -> (RecvBuffer, Receiver<StreamSendThreadMsg>) {
@@ -191,9 +199,9 @@ mod test {
   #[test]
   fn test_adding() {
     let (mut buf, _rcv) = setup(0);
-    buf.handle_seq(0, vec![0u8, 1u8]);
+    buf.handle_seq(1, vec![0u8, 1u8]);
     debug_assert_eq!(buf.window_data.left_index, 2);
-    buf.handle_seq(2, vec![2u8, 3u8]);
+    buf.handle_seq(3, vec![2u8, 3u8]);
     debug_assert_eq!(buf.window_data.left_index, 4);
 
     assert_eq!(buf.buf.clone()[0..4], vec![0u8, 1u8, 2u8, 3u8]);
@@ -202,9 +210,9 @@ mod test {
   #[test]
   fn test_disjoint() {
     let (mut buf, _rcv) = setup(0);
-    buf.handle_seq(0, vec![0u8, 1u8]);
+    buf.handle_seq(1, vec![0u8, 1u8]);
     debug_assert_eq!(buf.window_data.left_index, 2);
-    buf.handle_seq(7, vec![7u8, 8u8]);
+    buf.handle_seq(8, vec![7u8, 8u8]);
     debug_assert_eq!(buf.window_data.left_index, 2);
 
     assert_eq!(
@@ -212,7 +220,7 @@ mod test {
       vec![0u8, 1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 7u8, 8u8]
     );
 
-    buf.handle_seq(3, vec![3u8, 4u8]);
+    buf.handle_seq(4, vec![3u8, 4u8]);
 
     assert_eq!(
       buf.buf.clone()[0..9],
@@ -224,14 +232,14 @@ mod test {
   #[test]
   fn test_exact_interval() {
     let (mut buf, _rcv) = setup(0);
-    buf.handle_seq(0, vec![0u8, 1u8]);
+    buf.handle_seq(1, vec![0u8, 1u8]);
     debug_assert_eq!(buf.window_data.left_index, 2);
-    buf.handle_seq(4, vec![4u8, 5u8]);
+    buf.handle_seq(5, vec![4u8, 5u8]);
     debug_assert_eq!(buf.window_data.left_index, 2);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 0u8, 0u8, 4u8, 5u8]);
 
-    buf.handle_seq(2, vec![2u8, 3u8]);
+    buf.handle_seq(3, vec![2u8, 3u8]);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8]);
     debug_assert_eq!(buf.window_data.left_index, 6);
@@ -240,12 +248,12 @@ mod test {
   #[test]
   fn test_overlap_left() {
     let (mut buf, _rcv) = setup(0);
-    buf.handle_seq(0, vec![0u8, 1u8, 2u8]);
-    buf.handle_seq(4, vec![4u8, 5u8]);
+    buf.handle_seq(1, vec![0u8, 1u8, 2u8]);
+    buf.handle_seq(5, vec![4u8, 5u8]);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 0u8, 4u8, 5u8]);
 
-    buf.handle_seq(2, vec![2u8, 3u8]);
+    buf.handle_seq(3, vec![2u8, 3u8]);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8]);
     debug_assert_eq!(buf.window_data.left_index, 6);
@@ -254,12 +262,12 @@ mod test {
   #[test]
   fn test_overlap_right() {
     let (mut buf, _rcv) = setup(0);
-    buf.handle_seq(0, vec![0u8, 1u8]);
-    buf.handle_seq(3, vec![3u8, 4u8, 5u8]);
+    buf.handle_seq(1, vec![0u8, 1u8]);
+    buf.handle_seq(4, vec![3u8, 4u8, 5u8]);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 0u8, 3u8, 4u8, 5u8]);
 
-    buf.handle_seq(2, vec![2u8, 3u8]);
+    buf.handle_seq(3, vec![2u8, 3u8]);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8]);
     debug_assert_eq!(buf.window_data.left_index, 6);
@@ -269,11 +277,11 @@ mod test {
   /// Consumes an entire existing interval, without intersecting others
   fn test_subsume_no_intersection() {
     let (mut buf, _rcv) = setup(0);
-    buf.handle_seq(2, vec![2u8, 3u8]);
+    buf.handle_seq(3, vec![2u8, 3u8]);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 0u8, 2u8, 3u8, 0u8, 0u8]);
 
-    buf.handle_seq(1, vec![1u8, 2u8, 3u8, 4u8]);
+    buf.handle_seq(2, vec![1u8, 2u8, 3u8, 4u8]);
 
     assert_eq!(buf.buf.clone()[0..6], vec![0u8, 1u8, 2u8, 3u8, 4u8, 0u8]);
     debug_assert_eq!(buf.window_data.left_index, 0);
@@ -284,7 +292,7 @@ mod test {
   fn test_subsume_left_intersection() {
     let (mut buf, _rcv) = setup(0);
 
-    buf.handle_seq(0, vec![0u8, 1u8]);
+    buf.handle_seq(1, vec![0u8, 1u8]);
 
     dbg!(&buf.window_data.starts);
     dbg!(&buf.window_data.ends);
@@ -294,7 +302,7 @@ mod test {
     debug_assert_eq!(buf.window_data.starts[&0u32], 2u32);
     debug_assert_eq!(buf.window_data.ends[&2u32], 0u32);
 
-    buf.handle_seq(3, vec![3u8, 4u8]);
+    buf.handle_seq(4, vec![3u8, 4u8]);
 
     dbg!(&buf.window_data.starts);
     dbg!(&buf.window_data.ends);
@@ -309,7 +317,7 @@ mod test {
       vec![0u8, 1u8, 0u8, 3u8, 4u8, 0u8, 0u8, 0u8, 0u8]
     );
 
-    buf.handle_seq(1, vec![1u8, 2u8, 3u8, 4u8, 5u8]);
+    buf.handle_seq(2, vec![1u8, 2u8, 3u8, 4u8, 5u8]);
 
     assert_eq!(
       buf.buf.clone()[0..9],
@@ -330,15 +338,15 @@ mod test {
   fn test_subsume_right_intersection() {
     let (mut buf, _rcv) = setup(0);
 
-    buf.handle_seq(7, vec![7u8, 8u8]);
-    buf.handle_seq(3, vec![3u8, 4u8]);
+    buf.handle_seq(8, vec![7u8, 8u8]);
+    buf.handle_seq(4, vec![3u8, 4u8]);
 
     assert_eq!(
       buf.buf.clone()[0..9],
       vec![0u8, 0u8, 0u8, 3u8, 4u8, 0u8, 0u8, 7u8, 8u8]
     );
 
-    buf.handle_seq(2, vec![2u8, 3u8, 4u8, 5u8, 6u8, 7u8]);
+    buf.handle_seq(3, vec![2u8, 3u8, 4u8, 5u8, 6u8, 7u8]);
 
     assert_eq!(
       buf.buf.clone()[0..9],
@@ -359,16 +367,16 @@ mod test {
   fn test_subsume_both_intersection() {
     let (mut buf, _rcv) = setup(0);
 
-    buf.handle_seq(0, vec![0u8, 1u8]);
-    buf.handle_seq(3, vec![3u8, 4u8]);
-    buf.handle_seq(7, vec![7u8, 8u8]);
+    buf.handle_seq(1, vec![0u8, 1u8]);
+    buf.handle_seq(4, vec![3u8, 4u8]);
+    buf.handle_seq(8, vec![7u8, 8u8]);
 
     assert_eq!(
       buf.buf.clone()[0..9],
       vec![0u8, 1u8, 0u8, 3u8, 4u8, 0u8, 0u8, 7u8, 8u8]
     );
 
-    buf.handle_seq(1, vec![1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8]);
+    buf.handle_seq(2, vec![1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8]);
 
     assert_eq!(
       buf.buf.clone()[0..9],
@@ -382,5 +390,52 @@ mod test {
     debug_assert!(buf.window_data.ends.contains_key(&9u32));
     debug_assert_eq!(buf.window_data.starts[&0u32], 9u32);
     debug_assert_eq!(buf.window_data.ends[&9u32], 0u32);
+  }
+
+  // not typing out Xu8 for brevity
+
+  fn check_ack(rx: &Receiver<StreamSendThreadMsg>, expected_ack: u32) {
+    match rx.recv() {
+      Ok(StreamSendThreadMsg::Ack(actual_ack)) => {
+        println!("{actual_ack}");
+        assert_eq!(actual_ack, expected_ack)
+      }
+      _ => panic!("Unexpected stream_msg"),
+    }
+  }
+
+  fn send_and_check(
+    buf: &mut RecvBuffer,
+    rcv_rx: &Receiver<StreamSendThreadMsg>,
+    seq: u32,
+    data: Vec<u8>,
+    expected_ack: u32,
+  ) {
+    print!(
+      "Sending seq {seq}: {:?}, expecting {expected_ack} as ack, got ",
+      data
+    );
+    buf.handle_seq(seq, data);
+    check_ack(&rcv_rx, expected_ack);
+  }
+
+  #[test]
+  #[timeout(1000)]
+  /// Tests receiving data, with correct acks
+  fn test_recv_data() {
+    let (mut buf, rcv_rx) = setup(0);
+    send_and_check(&mut buf, &rcv_rx, 1, vec![1, 2, 3, 4, 5, 6, 7], 8);
+  }
+
+  #[test]
+  #[timeout(1000)]
+  /// Tests receiving data out of order, with correct acks
+  fn test_recv_data_out_of_order() {
+    let (mut buf, rcv_rx) = setup(0);
+    send_and_check(&mut buf, &rcv_rx, 5, vec![4, 5, 6, 7], 1);
+    send_and_check(&mut buf, &rcv_rx, 3, vec![2, 3], 1);
+    send_and_check(&mut buf, &rcv_rx, 2, vec![1], 1);
+    // ack should go up by 8 bytes, since we wrote 8 bytes
+    send_and_check(&mut buf, &rcv_rx, 1, vec![0], 9);
   }
 }
