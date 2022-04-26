@@ -1,3 +1,4 @@
+use std::any::type_name;
 use std::io::{stdin, stdout, Write};
 use std::net::Ipv4Addr;
 use std::str::FromStr;
@@ -36,7 +37,7 @@ fn parse_num<T: FromStr>(tokens: Vec<String>) -> Result<T> {
   check_len(&tokens, 1)?;
   tokens[1]
     .parse()
-    .map_err(|_| anyhow!("single arg must be positive int"))
+    .map_err(|_| anyhow!("single arg must be {}", type_name::<T>()))
 }
 
 fn parse_tcp_address(tokens: Vec<String>) -> Result<(Ipv4Addr, Port)> {
@@ -152,7 +153,10 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
     "recv" | "r" => {
       let (socket_id, numbytes, should_block) = parse_recv_args(tokens)?;
       let data = tcp_layer.recv(socket_id, numbytes, should_block)?;
-      println!("{:?}", std::str::from_utf8(&data));
+      println!(
+        "{}",
+        std::str::from_utf8(&data).unwrap_or("Not UTF8, can't print")
+      );
     }
     "shutdown" | "sd" => {
       let (socket_id, shutdown_method) = parse_shutdown_args(tokens)?;
