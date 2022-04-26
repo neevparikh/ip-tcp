@@ -36,19 +36,17 @@ impl RecvBuffer {
       stream_send_tx,
       window_data: RecvWindow {
         initial_sequence_number: None,
-        left_index:              AtomicU32::new(0),
+        left_index:              0,
         reader_index:            0,
-        data_ready:              Condvar::new(),
         starts:                  BTreeMap::new(),
         ends:                    BTreeMap::new(),
       },
     }
   }
 
-  /// Read data into buffer, until buffer is full. TODO: Block until data is available to read
-  pub fn read_data(&mut self, data: &mut [u8]) -> Result<usize> {
-    let bytes_available =
-      (self.window_data.left_index.load(Ordering::SeqCst) - self.window_data.reader_index) as usize;
+  /// Read data into buffer, until buffer is full.
+  pub fn read_data(&mut self, data: &mut [u8]) -> usize {
+    let bytes_available = (self.window_data.left_index - self.window_data.reader_index) as usize;
 
     if bytes_available > 0 {
       let data = &mut data[..bytes_available];
@@ -62,7 +60,7 @@ impl RecvBuffer {
         .wrapping_add(bytes_available as u32);
     }
 
-    Ok(bytes_available)
+    bytes_available
   }
 
   pub fn set_initial_seq_num(&mut self, initial_seq: u32) {

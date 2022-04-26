@@ -196,7 +196,7 @@ impl TcpStream {
   }
 
   /// Called by TcpLayer
-  /// TODO: what is the behavior if the stream dies while blocked
+  /// TODO: what is the behavior if the stream dies while blocked: ans: return err
   pub fn recv(&self, num_bytes: usize, should_block: bool) -> Result<Vec<u8>> {
     let mut data = vec![0u8; num_bytes];
     let mut bytes_read = 0;
@@ -204,12 +204,10 @@ impl TcpStream {
       let buf = self.recv_buffer.lock().unwrap();
       let _ = self
         .recv_buffer_cond
-        .wait_while(buf, |buf| match buf.read_data(&mut data[bytes_read..]) {
-          Ok(n) => {
-            bytes_read += n;
-            bytes_read < num_bytes
-          }
-          Err(_) => false,
+        .wait_while(buf, |buf| {
+          let n = buf.read_data(&mut data[bytes_read..]);
+          bytes_read += n;
+          bytes_read < num_bytes
         })
         .unwrap();
 
@@ -220,7 +218,7 @@ impl TcpStream {
       }
     } else {
       let mut buf = self.recv_buffer.lock().unwrap();
-      let bytes_read = buf.read_data(&mut data)?;
+      let bytes_read = buf.read_data(&mut data);
       debug_assert!(bytes_read <= num_bytes);
       data.resize(bytes_read, 0u8);
       Ok(data)
