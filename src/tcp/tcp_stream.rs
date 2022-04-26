@@ -290,11 +290,11 @@ impl TcpStream {
                 let port = tcp_header.source_port;
 
                 stream.set_source_ip(ip_header.destination.into());
-                stream.set_initial_ack(tcp_header.sequence_number.wrapping_add(1));
                 recv_buffer
                   .lock()
                   .unwrap()
-                  .set_initial_seq_num(stream.initial_ack.unwrap());
+                  .set_initial_seq_num(tcp_header.sequence_number);
+                stream.set_initial_ack(tcp_header.sequence_number.wrapping_add(1));
 
                 match stream.send_syn_ack(ip, port) {
                   Ok(()) => {
