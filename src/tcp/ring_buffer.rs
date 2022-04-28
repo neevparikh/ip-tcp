@@ -85,7 +85,6 @@ impl RingBuffer {
     let l = self.len();
     let w = self.write_idx;
     let r = self.read_idx;
-    dbg!(l, size, w, r, self.read_idx);
     if r == w {
       Vec::new()
     } else if r < w {
