@@ -215,7 +215,7 @@ impl ForwardingTable {
     let neighbors = self.neighbors.clone();
     let our_interfaces = self.our_interfaces.clone();
     thread::spawn(move || {
-      debug!("Starting keep alive thread");
+      // debug!("Starting keep alive thread");
       loop {
         let table = table.lock().unwrap().clone();
         if let Err(e) = ForwardingTable::make_response_and_send_to_all(
