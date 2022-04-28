@@ -150,15 +150,22 @@ impl TcpLayer {
   pub fn shutdown(&self, socket_id: SocketId, shutdown_method: SocketSide) {
     let streams = self.streams.read().unwrap();
     let stream = match streams.get(socket_id) {
-      Some(stream) => Ok(stream),
-      None => Err(anyhow!("Unknown socket_id: {socket_id}")),
+      Some(stream) => stream,
+      None => {
+        debug!("Unknown socket_id: {socket_id}");
+        return;
+      }
     };
-    todo!()
-    // match shutdown_method {
-    //   SocketSide::Write() => stream.close(),
-    //   SocketSide::Read() => {}
-    //   SocketSide::Both() => {}
-    // }
+
+    match shutdown_method {
+      SocketSide::Write => {
+        if let Err(e) = stream.close() {
+          debug!("Error: {e}")
+        }
+      }
+      SocketSide::Read => todo!(),
+      SocketSide::Both => todo!(),
+    }
   }
 
   pub fn close(&self, socket_id: SocketId) {

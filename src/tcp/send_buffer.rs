@@ -121,14 +121,26 @@ impl SendBuffer {
   }
 
   pub fn handle_ack_of_syn(&self, window_size: u16) -> Result<()> {
-    let state = self.state_pair.0.lock().unwrap();
+    let mut state = self.state_pair.0.lock().unwrap();
     match *state {
       SendBufferState::SynSent => {
         let mut window = self.window.write().unwrap();
         window.handle_ack_of_syn(window_size);
+        *state = SendBufferState::Ready;
         Ok(())
       }
       _ => Err(anyhow!("Unexpected ack of syn")),
+    }
+  }
+
+  pub fn handle_ack_of_fin(&self) {
+    let state = self.state_pair.0.lock().unwrap();
+    match *state {
+      SendBufferState::FinSent => {
+        let mut window = self.window.write().unwrap();
+        window.handle_ack_of_fin();
+      }
+      _ => edebug!("Unexpected ack of syn"),
     }
   }
 
@@ -345,7 +357,7 @@ impl SendBuffer {
 
       let mut distance_to_end = match buf.dist_to_end_from_seq(curr_seq) {
         Some(d) => d,
-        None => continue,
+        None => 0,
       };
 
       let max_window_size = window.max_size.min(window.recv_window_size as usize);
@@ -423,6 +435,12 @@ impl SendWindow {
     debug_assert!(self.elems.len() == 1);
     let elem = self.elems.pop_front();
     debug_assert!(elem.unwrap().msg_type == WindowElementType::Syn);
+  }
+
+  pub fn handle_ack_of_fin(&mut self) {
+    // Pop from the back because we might have old messages we are still retrying
+    let elem = self.elems.pop_back();
+    debug_assert!(elem.unwrap().msg_type == WindowElementType::Fin);
   }
 
   /// Returns the number of bytes popped off of the window
@@ -504,6 +522,9 @@ impl SendData {
   /// Returns none if the data associated with seq_number is not currently in the buffer, otherwise
   /// returns the number of bytes after the point inclusice of seq_number
   pub fn dist_to_end_from_seq(&self, seq_number: u32) -> Option<usize> {
+    if self.data.len() == 0 {
+      return None;
+    }
     let start = self.first_sequnce_number;
     let end = start.wrapping_add(self.data.len() as u32);
     let in_no_wrapping = seq_number >= start && (seq_number <= end || end <= start);
