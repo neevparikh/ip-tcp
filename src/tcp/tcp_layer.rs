@@ -109,9 +109,14 @@ impl TcpLayer {
   }
 
   pub fn print_window(&self, socket: SocketId) {
-    // let streams =
-    // if !(0..self.streams.read().unwrap().len())socket
-    // let stream = self.streams.read().unwrap()[socket];
+    let streams = self.streams.read().unwrap();
+    let num_streams = streams.len();
+    if !(0..num_streams).contains(&socket) {
+      eprintln!("Invalid socket_id {socket}, must be within 0..{num_streams}");
+    } else {
+      let stream = &streams[socket];
+      println!("Window size: {}", stream.get_window_size());
+    }
   }
 
   pub fn accept(&self, port: Port) {
