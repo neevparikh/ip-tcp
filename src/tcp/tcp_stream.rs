@@ -13,9 +13,26 @@ use super::{IpTcpPacket, Port, TCP_BUF_SIZE};
 use crate::ip::protocol::Protocol;
 use crate::{debug, edebug, IpPacket};
 
+/// Note that these should be thought of as the valid states to retry sending a syn packet, which
+/// is while SynSent is in there
+const VALID_SYN_STATES: [TcpStreamState; 3] = [
+  TcpStreamState::Listen,
+  TcpStreamState::SynReceived,
+  TcpStreamState::SynSent,
+];
+/// Again these are states we should be okay retrying a fin
+const VALID_FIN_STATES: [TcpStreamState; 6] = [
+  TcpStreamState::SynReceived,
+  TcpStreamState::Established,
+  TcpStreamState::FinWait1, // Note there might be a race condition where FinWait2 happens
+  TcpStreamState::Closing,
+  TcpStreamState::CloseWait,
+  TcpStreamState::LastAck,
+];
 const VALID_SEND_STATES: [TcpStreamState; 2] =
   [TcpStreamState::Established, TcpStreamState::CloseWait];
-const VALID_ACK_STATES: [TcpStreamState; 3] = [
+const VALID_ACK_STATES: [TcpStreamState; 4] = [
+  TcpStreamState::SynSent,
   TcpStreamState::FinWait1,
   TcpStreamState::FinWait2,
   TcpStreamState::Established,
@@ -49,6 +66,10 @@ struct TcpStreamInternal {
   /// This is set equal to the initial_sequence_number of the other node + 1
   initial_ack:             Option<u32>,
 
+  /// Used to set sequence number on acks and ack number of data packets
+  last_ack: Option<u32>,
+  next_seq: u32,
+
   /// state
   state:      TcpStreamState,
   ip_send_tx: Sender<IpPacket>,
@@ -57,8 +78,11 @@ struct TcpStreamInternal {
 #[derive(Debug)]
 pub(super) enum StreamSendThreadMsg {
   /// sequence number, data
+  Syn,
   Outgoing(u32, Vec<u8>),
   Ack(u32),
+  /// includes seq num
+  Fin(u32),
 
   /// Sent in the case the stream has shutdown (i.e. we've sent too many retries with no acks)
   Shutdown,
@@ -99,6 +123,8 @@ impl TcpStream {
       destination_port,
       initial_sequence_number,
       initial_ack: None,
+      last_ack: None,
+      next_seq: initial_sequence_number.wrapping_add(1),
       state: initial_state,
       ip_send_tx: ip_send_tx.clone(),
     }));
@@ -147,7 +173,7 @@ impl TcpStream {
     destination_port: Port,
     ip_send_tx: Sender<IpPacket>,
   ) -> Result<TcpStream> {
-    let new_stream = TcpStream::new(
+    let mut new_stream = TcpStream::new(
       Some(source_ip),
       source_port,
       Some(destination_ip),
@@ -156,11 +182,8 @@ impl TcpStream {
       ip_send_tx,
     );
 
-    new_stream
-      .internal
-      .lock()
-      .unwrap()
-      .send_syn(destination_ip, destination_port)?;
+    new_stream.send_buffer.send_syn()?;
+    new_stream.set_state(TcpStreamState::SynSent);
 
     Ok(new_stream)
   }
@@ -225,6 +248,49 @@ impl TcpStream {
     }
   }
 
+  /// Close is a overloaded term when dealing with sockets. This function corresponds to the
+  /// sending the CLOSE command as described in the RFC. This corresponds to calling shutdown with
+  /// the method set to write.
+  pub fn close(&self) -> Result<()> {
+    let mut internal = self.internal.lock().unwrap();
+    match internal.state {
+      TcpStreamState::Listen => {
+        // TODO: Any outstanding RECEIVEs are returned with "error:  closing"
+        // responses.  Delete TCB, enter CLOSED state, and return.
+        internal.state = TcpStreamState::Closed;
+        Ok(())
+      }
+      TcpStreamState::SynSent => {
+        // TODO: delete the TCB (this probably need to be handled a level up?)
+        internal.state = TcpStreamState::Closed;
+        Ok(())
+      }
+      TcpStreamState::SynReceived => {
+        // TODO: If no SENDs have been issued and there is no pending data to send,
+        // then form a FIN segment and send it, and enter FIN-WAIT-1 state;
+        // otherwise queue for processing after entering ESTABLISHED state.
+        Ok(())
+      }
+      TcpStreamState::Established => {
+        // TODO: Queue this request until all preceding SENDs have been
+        // segmentized; then send a FIN segment, enter CLOSING state.
+        internal.state = TcpStreamState::FinWait1;
+        Ok(())
+      }
+      TcpStreamState::FinWait1 => Err(anyhow!("connection closing")),
+      TcpStreamState::FinWait2 => Err(anyhow!("connection closing")),
+      TcpStreamState::CloseWait => {
+        // TODO: Queue this request until all preceding SENDs have been
+        // segmentized; then send a FIN segment, enter CLOSING state.
+        Ok(())
+      }
+      TcpStreamState::Closing => Err(anyhow!("connection closing")),
+      TcpStreamState::LastAck => Err(anyhow!("connection closing")),
+      TcpStreamState::TimeWait => Err(anyhow!("connection closing")),
+      TcpStreamState::Closed => Err(anyhow!("connection closing")),
+    }
+  }
+
   // TODO maybe better name?
   /// Handles sending packets from send buffer (to send data out) and handles sending acks for
   /// recieved data from recv buffer.
@@ -241,20 +307,40 @@ impl TcpStream {
         }
       }
       match send_thread_rx.recv_timeout(Duration::from_millis(10)) {
+        Ok(StreamSendThreadMsg::Syn) => {
+          let mut stream = stream.lock().unwrap();
+          match stream.state {
+            TcpStreamState::Listen | TcpStreamState::SynSent => {
+              stream.send_syn();
+            }
+            TcpStreamState::SynReceived => {
+              stream.send_syn_ack();
+            }
+            other => (),
+          }
+        }
         Ok(StreamSendThreadMsg::Outgoing(seq_num, data)) => {
-          if VALID_SEND_STATES.contains(&stream.lock().unwrap().state) {
-            if let Err(_e) = stream.lock().unwrap().send_data(seq_num, data) {
+          let mut stream = stream.lock().unwrap();
+          if VALID_SEND_STATES.contains(&stream.state) {
+            if let Err(_e) = stream.send_data(seq_num, data) {
               edebug!("Failed to send data with seq_num {seq_num}");
               break;
             }
           }
         }
         Ok(StreamSendThreadMsg::Ack(ack_num)) => {
-          if VALID_ACK_STATES.contains(&stream.lock().unwrap().state) {
-            if let Err(_e) = stream.lock().unwrap().send_ack_for_data(ack_num) {
+          let mut stream = stream.lock().unwrap();
+          if VALID_ACK_STATES.contains(&stream.state) {
+            if let Err(_e) = stream.send_ack(ack_num) {
               edebug!("Failed to send {ack_num} for data");
               break;
             }
+          }
+        }
+        Ok(StreamSendThreadMsg::Fin(seq_num)) => {
+          let mut stream = stream.lock().unwrap();
+          if VALID_ACK_STATES.contains(&stream.state) {
+            stream.send_fin(seq_num);
           }
         }
         Ok(StreamSendThreadMsg::Shutdown) => {
@@ -288,6 +374,7 @@ impl TcpStream {
               if tcp_header.syn {
                 let ip: Ipv4Addr = ip_header.source.into();
                 let port = tcp_header.source_port;
+                stream.set_destination_or_check(ip, port);
 
                 stream.set_source_ip(ip_header.destination.into());
                 recv_buffer
@@ -296,24 +383,25 @@ impl TcpStream {
                   .set_initial_seq_num(tcp_header.sequence_number);
                 stream.set_initial_ack(tcp_header.sequence_number.wrapping_add(1));
 
-                match stream.send_syn_ack(ip, port) {
+                // Note ack will be sent on the syn since we are in SynReceived
+                match send_buffer.send_syn() {
                   Ok(()) => {
                     stream.state = TcpStreamState::SynReceived;
                   }
                   Err(e) => {
                     edebug!("Failed to send syn_ack {e}, closing");
-                    stream.close();
+                    stream.state = TcpStreamState::Closed;
                   }
                 }
               }
             }
             TcpStreamState::SynReceived => {
               if tcp_header.ack {
-                let ack_num = tcp_header.acknowledgment_number;
                 let window_size = tcp_header.window_size;
-                if let Err(e) = send_buffer.handle_ack(ack_num, window_size) {
-                  edebug!("Failed to handle ack {e}, closing...");
-                  stream.close();
+                debug_assert!(tcp_header.acknowledgment_number == stream.initial_ack.unwrap());
+                if let Err(e) = send_buffer.handle_ack_of_syn(window_size) {
+                  edebug!("Failed to handle ack of syn {e}, closing...");
+                  // Don't stop here, this could be because of a duplicate syn ack send
                 }
                 stream.state = TcpStreamState::Established;
               }
@@ -321,21 +409,22 @@ impl TcpStream {
             TcpStreamState::SynSent => {
               let ip: Ipv4Addr = ip_header.source.into();
               let port = tcp_header.source_port;
+              stream.set_destination_or_check(ip, port);
+              let initial_ack = tcp_header.sequence_number.wrapping_add(1);
+              stream.set_initial_ack(tcp_header.sequence_number.wrapping_add(1));
               if tcp_header.ack && tcp_header.syn {
                 recv_buffer
                   .lock()
                   .unwrap()
                   .set_initial_seq_num(tcp_header.sequence_number);
-                stream.set_initial_ack(tcp_header.sequence_number.wrapping_add(1));
 
-                let ack_num = tcp_header.acknowledgment_number;
                 let window_size = tcp_header.window_size;
-                if let Err(e) = send_buffer.handle_ack(ack_num, window_size) {
-                  edebug!("Failed to handle ack {e}, closing...");
-                  stream.close();
+                if let Err(e) = send_buffer.handle_ack_of_syn(window_size) {
+                  edebug!("Failed to handle ack of syn {e}, closing...");
+                  // Don't stop here, this could be because of a duplicate syn ack send
                 }
 
-                match stream.send_initial_ack(ip, port) {
+                match stream.send_ack(initial_ack) {
                   Ok(()) => {
                     stream.state = TcpStreamState::Established;
                   }
@@ -346,15 +435,14 @@ impl TcpStream {
                   .lock()
                   .unwrap()
                   .set_initial_seq_num(tcp_header.sequence_number);
-                stream.set_initial_ack(tcp_header.sequence_number.wrapping_add(1));
                 stream.set_source_ip(ip_header.destination.into());
-                match stream.send_initial_ack(ip, port) {
+                match stream.send_ack(initial_ack) {
                   Ok(()) => {
                     stream.state = TcpStreamState::SynReceived;
                   }
                   Err(e) => {
                     edebug!("Failed to send initial ack {e}, closing...");
-                    stream.close();
+                    stream.state = TcpStreamState::Closed;
                   }
                 }
               }
@@ -365,7 +453,7 @@ impl TcpStream {
                   send_buffer.handle_ack(tcp_header.acknowledgment_number, tcp_header.window_size)
                 {
                   edebug!("Failed to handle ack {e}, closing...");
-                  stream.close();
+                  stream.state = TcpStreamState::Closed;
                   return;
                 }
               }
@@ -377,7 +465,7 @@ impl TcpStream {
                   .handle_seq(tcp_header.sequence_number, data)
                 {
                   edebug!("Failed to handle seq {e}, closing...");
-                  stream.close();
+                  stream.state = TcpStreamState::Closed;
                   return;
                 }
                 recv_buffer_cond.notify_one();
@@ -397,7 +485,7 @@ impl TcpStream {
         Err(RecvTimeoutError::Timeout) => (),
         Err(RecvTimeoutError::Disconnected) => {
           let mut stream = stream.lock().unwrap();
-          stream.close();
+          stream.state = TcpStreamState::Closed;
           debug!("Listen stream_rx closed, closing...");
           break;
         }
@@ -405,35 +493,31 @@ impl TcpStream {
     });
   }
 
-  fn close(&mut self) {
-    self.internal.lock().unwrap().close();
+  fn set_state(&mut self, state: TcpStreamState) {
+    self.internal.lock().unwrap().state = state;
   }
 }
 
 impl TcpStreamInternal {
-  fn send_syn(&mut self, destination_ip: Ipv4Addr, destination_port: Port) -> Result<()> {
-    debug_assert_state_valid(
-      &self.state,
-      &[TcpStreamState::Closed, TcpStreamState::Listen],
-    );
+  fn send_syn(&mut self) -> Result<()> {
+    debug_assert_state_valid(&self.state, &VALID_SYN_STATES);
 
-    self.set_destination_or_check(destination_ip, destination_port);
+    debug_assert!(self.destination_ip.is_some());
+    debug_assert!(self.destination_port.is_some());
 
     let mut msg = self.make_default_tcp_header();
     msg.syn = true;
+    msg.sequence_number = self.initial_sequence_number;
 
     self.send_tcp_packet(msg, &[])?;
-    self.state = TcpStreamState::SynSent;
     Ok(())
   }
 
-  fn send_syn_ack(&mut self, destination_ip: Ipv4Addr, destination_port: Port) -> Result<()> {
-    debug_assert_state_valid(
-      &self.state,
-      &[TcpStreamState::Listen, TcpStreamState::SynSent],
-    );
+  fn send_syn_ack(&mut self) -> Result<()> {
+    debug_assert_state_valid(&self.state, &VALID_SYN_STATES);
 
-    self.set_destination_or_check(destination_ip, destination_port);
+    debug_assert!(self.destination_ip.is_some());
+    debug_assert!(self.destination_port.is_some());
 
     let mut msg = self.make_default_tcp_header();
     msg.syn = true;
@@ -442,49 +526,33 @@ impl TcpStreamInternal {
     msg.acknowledgment_number = self.initial_ack.unwrap();
 
     self.send_tcp_packet(msg, &[])?;
-    self.state = TcpStreamState::SynSent;
     Ok(())
   }
 
-  fn send_ack_for_data(&mut self, ack: u32) -> Result<()> {
+  fn send_ack(&mut self, ack: u32) -> Result<()> {
     debug_assert_state_valid(&self.state, &VALID_ACK_STATES);
+    debug_assert!(self.destination_ip.is_some());
+    debug_assert!(self.destination_port.is_some());
     let mut msg = self.make_default_tcp_header();
     msg.ack = true;
-    // TODO: fix this, this is wrong
-    msg.sequence_number = self.initial_sequence_number.wrapping_add(1);
+    msg.sequence_number = self.next_seq;
     msg.acknowledgment_number = ack;
 
     self.send_tcp_packet(msg, &[])?;
     Ok(())
   }
 
-  fn send_initial_ack(&mut self, destination_ip: Ipv4Addr, destination_port: Port) -> Result<()> {
-    debug_assert_state_valid(
-      &self.state,
-      &[
-        TcpStreamState::Established,
-        TcpStreamState::SynSent,
-        TcpStreamState::FinWait1,
-        TcpStreamState::FinWait2,
-      ],
-    );
-
-    self.set_destination_or_check(destination_ip, destination_port);
-
-    let mut msg = self.make_default_tcp_header();
-    msg.ack = true;
-    msg.sequence_number = self.initial_sequence_number;
-    msg.acknowledgment_number = self.initial_ack.unwrap();
-
-    self.send_tcp_packet(msg, &[])?;
-    Ok(())
+  fn send_fin(&mut self, seq_num: u32) {
+    todo!()
   }
 
   fn send_data(&mut self, seq_num: u32, data: Vec<u8>) -> Result<()> {
     debug_assert_state_valid(&self.state, &VALID_SEND_STATES);
 
     let mut msg = self.make_default_tcp_header();
+    msg.ack = true;
     msg.sequence_number = seq_num;
+    msg.acknowledgment_number = self.last_ack.unwrap();
 
     self.send_tcp_packet(msg, &data)?;
     Ok(())
@@ -508,6 +576,11 @@ impl TcpStreamInternal {
     self.ip_send_tx.send(ip_msg)?;
     Ok(())
   }
+
+  /// Close is a overloaded term when dealing with sockets. This function corresponds to the
+  /// sending the CLOSE command as described in the RFC. This corresponds to calling shutdown with
+  /// the method set to write.
+  pub fn close(&self) {}
 
   fn make_default_tcp_header(&self) -> TcpHeader {
     debug_assert!(self.destination_port.is_some());
@@ -565,10 +638,6 @@ impl TcpStreamInternal {
   pub fn state(&self) -> TcpStreamState {
     self.state
   }
-
-  fn close(&mut self) {
-    self.state = TcpStreamState::Closed;
-  }
 }
 
 /// Helper function for validates valid state transitions, should be called at the
@@ -579,6 +648,6 @@ fn debug_assert_state_valid(curr_state: &TcpStreamState, valid_states: &[TcpStre
 
 impl Drop for TcpStream {
   fn drop(&mut self) {
-    self.close();
+    self.set_state(TcpStreamState::Closed);
   }
 }

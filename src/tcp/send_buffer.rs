@@ -4,12 +4,13 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use super::tcp_stream::StreamSendThreadMsg;
 use super::{MAX_WINDOW_SIZE, MTU, TCP_BUF_SIZE};
 use crate::{debug, edebug};
 
+/// Note: in a weird implementation quirk Syn and Fin messages are retried 1 fewer times
 const MAX_RETRIES: u8 = 4;
 const RTO_LBOUND: Duration = Duration::from_millis(1);
 const RTO_UBOUND: Duration = Duration::from_secs(60);
@@ -17,8 +18,31 @@ const RTO_BETA: f32 = 2f32;
 const SRTT_ALPHA: f32 = 0.8f32;
 const INITIAL_SRTT: Duration = Duration::from_millis(1500);
 
+#[derive(Debug, PartialEq)]
+enum WindowElementType {
+  Data,
+  Syn,
+  Fin,
+}
+
+#[derive(Debug, PartialEq)]
+enum SendBufferState {
+  /// Initial state. Transitions to SynSent when syn is sent
+  Init,
+  /// Syn has not been acked yet, data should be queued. Transitions to Ready when syn is acked
+  SynSent,
+  /// Syn has been acked and data can be sent. Transitions to Sending while messages are being
+  /// queued. Transitions to Closing when Fin is queued
+  Ready,
+  /// Fin has been sent. Transitions to closed when Fin is acked or hits max retries
+  FinSent,
+  /// SendBuffer is dead
+  Closed,
+}
+
 #[derive(Debug)]
 struct WindowElement {
+  msg_type:       WindowElementType,
   num_retries:    u8,
   last_time_sent: Instant,
   time_to_retry:  Instant,
@@ -51,6 +75,8 @@ struct SendData {
 
 #[derive(Debug)]
 pub(super) struct SendBuffer {
+  state_pair: Arc<(Mutex<SendBufferState>, Condvar)>,
+
   buf:      Arc<Mutex<SendData>>,
   buf_cond: Arc<Condvar>,
 
@@ -68,6 +94,8 @@ impl SendBuffer {
     let (wake_timeout_thread_tx, wake_timeout_thread_rx) = mpsc::channel();
     let first_seq = initial_sequence_number.wrapping_add(1);
     let buf = SendBuffer {
+      state_pair: Arc::new((Mutex::new(SendBufferState::Init), Condvar::new())),
+
       buf: Arc::new(Mutex::new(SendData {
         data:                 VecDeque::with_capacity(TCP_BUF_SIZE),
         first_sequnce_number: first_seq,
@@ -92,6 +120,18 @@ impl SendBuffer {
     buf
   }
 
+  pub fn handle_ack_of_syn(&self, window_size: u16) -> Result<()> {
+    let state = self.state_pair.0.lock().unwrap();
+    match *state {
+      SendBufferState::SynSent => {
+        let mut window = self.window.write().unwrap();
+        window.handle_ack_of_syn(window_size);
+        Ok(())
+      }
+      _ => Err(anyhow!("Unexpected ack of syn")),
+    }
+  }
+
   pub fn handle_ack(&self, ack_num: u32, window_size: u16) -> Result<()> {
     let mut window = self.window.write().unwrap();
     let bytes_acked = window.handle_ack(ack_num, window_size);
@@ -108,6 +148,24 @@ impl SendBuffer {
   /// TODO: Should never have multiple threads calling this function
   pub fn write_data(&self, data: &[u8]) -> Result<usize> {
     let mut bytes_written = 0;
+    let state = self.state_pair.0.lock().unwrap();
+    let state = self
+      .state_pair
+      .1
+      .wait_while(state, |state| match *state {
+        SendBufferState::Init => true,
+        SendBufferState::SynSent => true,
+        _ => false,
+      })
+      .unwrap();
+
+    match *state {
+      SendBufferState::Ready => (), // all good
+      SendBufferState::Init => panic!("Can never happen because of wait_while above"),
+      SendBufferState::SynSent => panic!("Can never happen because of wait_while above"),
+      _ => return Err(anyhow!("connection closing")),
+    }
+
     while bytes_written < data.len() {
       let buf = self.buf.lock().unwrap();
       let mut buf = self
@@ -117,7 +175,62 @@ impl SendBuffer {
       bytes_written += buf.write(&data[bytes_written..]);
       self.wake_send_thread()?;
     }
+
+    self.state_pair.1.notify_all();
+
     Ok(bytes_written)
+  }
+
+  pub fn send_syn(&self) -> Result<()> {
+    let mut state = self.state_pair.0.lock().unwrap();
+    match *state {
+      SendBufferState::Init => {
+        self.window.write().unwrap().send_syn();
+        *state = SendBufferState::SynSent;
+        self.wake_send_thread()?;
+        Ok(())
+      }
+      SendBufferState::SynSent => {
+        edebug!("send_syn called more than once, ignoring...");
+        Ok(())
+      }
+      _ => Err(anyhow!(
+        "sending syn after connection is already established/shut down"
+      )),
+    }
+  }
+
+  pub fn send_fin(&self) -> Result<()> {
+    let state = self.state_pair.0.lock().unwrap();
+    match *state {
+      SendBufferState::Init => {
+        panic!("Impossible since close is called by the user, which they can't do until syn_sent");
+      }
+      SendBufferState::Ready | SendBufferState::SynSent => {
+        // if it's SynSent wait until ready
+        let mut state = self
+          .state_pair
+          .1
+          .wait_while(state, |state| *state == SendBufferState::SynSent)
+          .unwrap();
+
+        if *state != SendBufferState::Ready {
+          debug!("Closed while waiting to send fin");
+          return Err(anyhow!(""));
+        }
+
+        let mut window = self.window.write().unwrap();
+        window.send_fin();
+        *state = SendBufferState::FinSent;
+        self.wake_send_thread()?;
+        Ok(())
+      }
+      SendBufferState::FinSent => {
+        debug!("send_fin called more than once, ignoring...");
+        Err(anyhow!("connection closing"))
+      }
+      SendBufferState::Closed => Err(anyhow!("connection closing")),
+    }
   }
 
   pub fn srtt(&self) -> Duration {
@@ -198,12 +311,18 @@ impl SendBuffer {
       let mut curr_seq = window.starting_sequence;
       let rto = window.rto();
       for elem in window.elems.iter_mut() {
-        if elem.time_to_retry < now {
-          debug!("Sending retry");
-          let send_res = stream_send_tx.send(StreamSendThreadMsg::Outgoing(
-            curr_seq,
-            Vec::from_iter(buf.read(curr_seq, elem.size as usize).copied()),
-          ));
+        if elem.time_to_retry <= now {
+          let send_res = match elem.msg_type {
+            WindowElementType::Syn => stream_send_tx.send(StreamSendThreadMsg::Syn),
+            WindowElementType::Data => {
+              debug!("Sending retry");
+              stream_send_tx.send(StreamSendThreadMsg::Outgoing(
+                curr_seq,
+                Vec::from_iter(buf.read(curr_seq, elem.size as usize).copied()),
+              ))
+            }
+            WindowElementType::Fin => stream_send_tx.send(StreamSendThreadMsg::Fin(curr_seq)),
+          };
 
           if send_res.is_err() {
             debug!("Sending to stream failed in SendBuffer, closing");
@@ -250,6 +369,7 @@ impl SendBuffer {
         curr_seq = curr_seq.wrapping_add(bytes_to_send as u32);
         distance_to_end -= bytes_to_send;
         window.elems.push_back(WindowElement {
+          msg_type:       WindowElementType::Data,
           num_retries:    0,
           last_time_sent: now,
           time_to_retry:  now + rto,
@@ -274,6 +394,35 @@ impl SendBuffer {
 impl SendWindow {
   pub fn rto(&self) -> Duration {
     RTO_UBOUND.min(RTO_LBOUND.max(self.srtt.mul_f32(RTO_BETA)))
+  }
+
+  pub fn send_syn(&mut self) {
+    let now = Instant::now();
+    self.elems.push_back(WindowElement {
+      msg_type:       WindowElementType::Syn,
+      num_retries:    0u8,
+      last_time_sent: now,
+      time_to_retry:  now,
+      size:           0u32,
+    })
+  }
+
+  pub fn send_fin(&mut self) {
+    let now = Instant::now();
+    self.elems.push_back(WindowElement {
+      msg_type:       WindowElementType::Fin,
+      num_retries:    0u8,
+      last_time_sent: now,
+      time_to_retry:  now,
+      size:           1u32,
+    })
+  }
+
+  pub fn handle_ack_of_syn(&mut self, window_size: u16) {
+    self.recv_window_size = window_size;
+    debug_assert!(self.elems.len() == 1);
+    let elem = self.elems.pop_front();
+    debug_assert!(elem.unwrap().msg_type == WindowElementType::Syn);
   }
 
   /// Returns the number of bytes popped off of the window
