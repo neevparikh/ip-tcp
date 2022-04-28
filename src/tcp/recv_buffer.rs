@@ -401,6 +401,7 @@ mod test {
         println!("{actual_ack}");
         assert_eq!(actual_ack, expected_ack)
       }
+      Ok(StreamSendThreadMsg::UpdateWindowSize(_)) => (),
       _ => panic!("Unexpected stream_msg"),
     }
   }
