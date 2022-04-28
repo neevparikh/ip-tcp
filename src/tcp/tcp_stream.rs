@@ -328,12 +328,18 @@ impl TcpStream {
           let mut stream = stream.lock().unwrap();
           match stream.state {
             TcpStreamState::Listen | TcpStreamState::SynSent => {
-              stream.send_syn();
+              if let Err(_e) = stream.send_syn() {
+                edebug!("Failed to send syn");
+                break;
+              }
             }
             TcpStreamState::SynReceived => {
-              stream.send_syn_ack();
+              if let Err(_e) = stream.send_syn_ack() {
+                edebug!("Failed to send syn ack");
+                break;
+              }
             }
-            other => (),
+            other => panic!("Unexpected syn stream_msg, state {:?}", other),
           }
         }
         Ok(StreamSendThreadMsg::Outgoing(seq_num, data)) => {
@@ -609,6 +615,7 @@ impl TcpStream {
                 }
               }
               TcpStreamState::TimeWait => {
+                // TODO: timeout for timewait
                 edebug!("Received packet in TimeWait");
               }
               TcpStreamState::LastAck => {
