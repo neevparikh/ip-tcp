@@ -9,7 +9,7 @@ use etherparse::{Ipv4Header, TcpHeader};
 
 use super::recv_buffer::RecvBuffer;
 use super::send_buffer::SendBuffer;
-use super::{IpTcpPacket, Port};
+use super::{IpTcpPacket, Port, MAX_WINDOW_SIZE};
 use crate::ip::protocol::Protocol;
 use crate::{debug, edebug, IpPacket};
 
@@ -131,7 +131,7 @@ impl TcpStream {
       initial_sequence_number,
       initial_ack: None,
       last_ack: None,
-      last_window_size: 0,
+      last_window_size: MAX_WINDOW_SIZE as u16,
       next_seq: initial_sequence_number.wrapping_add(1),
       state: initial_state,
       ip_send_tx: ip_send_tx.clone(),
