@@ -306,7 +306,7 @@ impl SendBuffer {
       }
 
       match wake_timeout_thread_rx.recv() {
-        Ok(()) => debug!("timeout thread woken"),
+        Ok(()) => (), //debug!("timeout thread woken"),
         Err(_) => {
           edebug!("timeout thread died");
           break;
@@ -482,6 +482,8 @@ impl SendWindow {
     if !(in_window_wrapping || in_window_no_wrapping) {
       if self.zero_window_probing {
         self.zero_window_probing = false;
+        // zero window probe byte not in window
+        self.starting_sequence += 1;
         return 1u32;
       }
       return 0u32;
