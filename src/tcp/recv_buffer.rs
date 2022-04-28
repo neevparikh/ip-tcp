@@ -78,13 +78,13 @@ impl WindowData {
   }
 
   fn cleanup_intervals_outside_window(&mut self) {
-    let remove: Vec<_> = if self.right <= self.left {
+    let remove: Vec<_> = if self.left <= self.right {
       self
         .starts
-        .range(self.right..self.left)
+        .range(self.left..self.right)
         .into_iter()
         .filter_map(|(&s, &e)| {
-          if (self.right..=self.left).contains(&e) {
+          if (self.left..=self.right).contains(&e) {
             Some((s, e))
           } else {
             None
@@ -94,11 +94,11 @@ impl WindowData {
     } else {
       self
         .starts
-        .range(0..self.left)
+        .range(0..self.right)
         .into_iter()
-        .chain(self.starts.range(self.right..).into_iter())
+        .chain(self.starts.range(self.left..).into_iter())
         .filter_map(|(&s, &e)| {
-          if (0..=self.left).contains(&e) || (self.right..).contains(&e) {
+          if (0..=self.right).contains(&e) || (self.left..).contains(&e) {
             Some((s, e))
           } else {
             None
@@ -106,6 +106,7 @@ impl WindowData {
         })
         .collect()
     };
+
     for (s, e) in remove {
       self.starts.remove(&s);
       self.ends.remove(&e);
@@ -228,6 +229,7 @@ impl RecvBuffer {
       }
 
       win.cleanup_intervals_outside_window();
+
       if let Err(_) = self
         .stream_send_tx
         .send(StreamSendThreadMsg::Ack(win.current_ack))
