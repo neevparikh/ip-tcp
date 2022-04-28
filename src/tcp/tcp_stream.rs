@@ -393,7 +393,7 @@ impl TcpStream {
             if let Err(e) = recv_buffer
               .lock()
               .unwrap()
-              .handle_seq(tcp_header.sequence_number, data)
+              .handle_seq(tcp_header.sequence_number, &data)
             {
               stream.state = TcpStreamState::Closed;
               return Err(anyhow!("Failed to handle seq {e}, closing..."));
@@ -440,7 +440,7 @@ impl TcpStream {
                   recv_buffer
                     .lock()
                     .unwrap()
-                    .set_initial_seq_num(tcp_header.sequence_number);
+                    .set_initial_seq_num_data(tcp_header.sequence_number);
                   stream.set_initial_ack(tcp_header.sequence_number.wrapping_add(1));
 
                   // Note ack will be sent on the syn since we are in SynReceived
@@ -476,7 +476,7 @@ impl TcpStream {
                   recv_buffer
                     .lock()
                     .unwrap()
-                    .set_initial_seq_num(tcp_header.sequence_number);
+                    .set_initial_seq_num_data(tcp_header.sequence_number);
 
                   let window_size = tcp_header.window_size;
                   if let Err(e) = send_buffer.handle_ack_of_syn(window_size) {
@@ -494,7 +494,7 @@ impl TcpStream {
                   recv_buffer
                     .lock()
                     .unwrap()
-                    .set_initial_seq_num(tcp_header.sequence_number);
+                    .set_initial_seq_num_data(tcp_header.sequence_number);
                   stream.set_source_ip(ip_header.destination.into());
                   match stream.send_ack(initial_ack) {
                     Ok(()) => {
