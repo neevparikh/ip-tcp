@@ -766,6 +766,7 @@ impl TcpStreamInternal {
   /// set initial_ack based on syn
   fn set_initial_ack(&mut self, ack: u32) {
     self.initial_ack = Some(ack);
+    self.last_ack = Some(ack);
   }
 
   /// set source_ip based on syn
