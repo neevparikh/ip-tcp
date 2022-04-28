@@ -1,5 +1,3 @@
-use crate::edebug;
-
 #[derive(Debug)]
 pub(super) struct RingBuffer {
   /// raw storage
