@@ -254,7 +254,8 @@ impl RecvBuffer {
       .expect("Fatal: Cannot call handle_seq without initializing with ISN");
 
     if win.left == win.right {
-      todo!();
+      debug!("Dropping packet, window size is 0");
+      return Ok(());
     }
 
     let wrap = win.right < win.left;
@@ -295,7 +296,7 @@ impl RecvBuffer {
       Some(win.handle_interval(win.left, seg_r))
     } else {
       debug!("Dropping packet, outside of window");
-      None
+      return Ok(());
     } {
       let wrap = interval_r < interval_l;
       if interval_l == win.left
