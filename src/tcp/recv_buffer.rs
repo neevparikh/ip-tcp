@@ -277,6 +277,7 @@ impl RecvBuffer {
       debug_assert_eq!(win.reader.wrapping_add(TCP_BUF_SIZE as u32), win.right);
     }
 
+    dbg!(win.left, win.right);
     bytes_asked_and_available
   }
 }
@@ -313,10 +314,17 @@ mod test {
     data: Vec<u8>,
     expected_ack: u32,
   ) {
-    print!(
-      "Sending seq {seq}: {:?}, expecting {expected_ack} as ack, got ",
-      data
-    );
+    if data.len() > 15 {
+      print!(
+        "Sending seq {seq}: {:?}..., expecting {expected_ack} as ack, got ",
+        data[..15].to_vec()
+      );
+    } else {
+      print!(
+        "Sending seq {seq}: {:?}, expecting {expected_ack} as ack, got ",
+        data
+      );
+    }
     buf.handle_seq(seq, &data).unwrap();
     check_ack(&rcv_rx, expected_ack);
   }
@@ -339,5 +347,30 @@ mod test {
     send_and_check(&mut buf, &rcv_rx, 2, vec![1], 1);
     // ack should go up by 8 bytes, since we wrote 8 bytes
     send_and_check(&mut buf, &rcv_rx, 1, vec![0], 9);
+  }
+
+  #[test]
+  #[timeout(1000)]
+  /// Tests receiving data when it wraps around the internal buffer
+  fn test_recv_data_wrap_internal_buffer() {
+    let (mut buf, rcv_rx) = setup(0);
+    send_and_check(
+      &mut buf,
+      &rcv_rx,
+      1,
+      vec![1; TCP_BUF_SIZE],
+      1 + TCP_BUF_SIZE as u32,
+    );
+    buf.read_data(&mut vec![0u8; TCP_BUF_SIZE / 2]);
+    send_and_check(
+      &mut buf,
+      &rcv_rx,
+      1 + TCP_BUF_SIZE as u32,
+      vec![2; TCP_BUF_SIZE / 2],
+      1 + TCP_BUF_SIZE as u32 + (TCP_BUF_SIZE / 2) as u32,
+    );
+    let mut expected = vec![2u8; TCP_BUF_SIZE / 2];
+    expected.append(&mut vec![1u8; TCP_BUF_SIZE - (TCP_BUF_SIZE / 2)]);
+    assert_eq!(buf.buf.get_raw_buf().clone(), &expected);
   }
 }
