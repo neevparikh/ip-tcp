@@ -552,6 +552,7 @@ mod test {
   fn setup() -> (SendBuffer, Receiver<StreamSendThreadMsg>) {
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
     let buf = SendBuffer::new(send_thread_tx.clone(), 0);
+    *buf.state_pair.0.lock().unwrap() = SendBufferState::Ready;
     let _ = buf.handle_ack(0, u16::max_value());
     (buf, send_thread_rx)
   }
@@ -559,6 +560,7 @@ mod test {
   fn setup_initial_seq(initial_seq: u32) -> (SendBuffer, Receiver<StreamSendThreadMsg>) {
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
     let buf = SendBuffer::new(send_thread_tx.clone(), initial_seq);
+    *buf.state_pair.0.lock().unwrap() = SendBufferState::Ready;
     buf.handle_ack(initial_seq, u16::max_value()).unwrap();
     (buf, send_thread_rx)
   }
@@ -622,6 +624,7 @@ mod test {
   }
 
   #[test]
+  #[timeout(1000)]
   fn test_send_buffer_simple() {
     let (send_buf, send_thread_rx) = setup();
     let data = vec![1u8, 2u8, 3u8, 4u8];
@@ -630,6 +633,7 @@ mod test {
   }
 
   #[test]
+  #[timeout(1000)]
   fn test_multiple_sends() {
     let (send_buf, send_thread_rx) = setup();
     let data = vec![1u8, 2u8, 3u8, 4u8];
@@ -674,6 +678,7 @@ mod test {
   }
 
   #[test]
+  #[timeout(1000)]
   fn test_overflow() {
     let (send_buf, send_thread_rx) = setup_initial_seq(u32::max_value() - 1);
     let data = vec![1u8];
@@ -690,6 +695,7 @@ mod test {
   }
 
   #[test]
+  #[timeout(1000)]
   fn test_send_big() {
     let (send_buf, send_thread_rx) = setup();
     let data = [0u8; MTU * 3 + 4];
