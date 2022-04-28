@@ -1,11 +1,13 @@
 #[derive(Debug)]
 pub(super) struct RingBuffer {
   /// raw storage
-  buf:       Vec<u8>,
+  pub(super) buf:       Vec<u8>,
   /// indexes into first ready to read slot
-  read_idx:  usize,
+  pub(super) read_idx:  usize,
   /// indexes into first free slot
-  write_idx: usize,
+  pub(super) write_idx: usize,
+  /// bool to distinguish full vs empty
+  pub(super) empty:     bool,
 }
 
 impl RingBuffer {
@@ -14,6 +16,7 @@ impl RingBuffer {
       buf:       vec![0u8; size],
       read_idx:  0,
       write_idx: 0,
+      empty:     true,
     }
   }
 
@@ -43,9 +46,8 @@ impl RingBuffer {
     let e = s + size;
     let e = if e == l { l } else { e % l };
     let r = self.read_idx;
-    let w = self.write_idx;
 
-    if r != w {
+    if !self.empty {
       debug_assert!(!(s <= r && e > r) && !(s >= e && e > r));
     } else {
       debug_assert!(!(s < r && e > r) && !(s >= e && e > r));
@@ -64,12 +66,14 @@ impl RingBuffer {
     let l = self.len();
     let w = self.write_idx;
     let r = self.read_idx;
-    let nw = w + num_bytes;
-    let nw = if nw == l { l } else { nw % l };
-    if r != w {
+    let nw = self.wrapping_add(w, num_bytes);
+    if !self.empty {
       debug_assert!(!(w <= r && nw > r) && !(w >= nw && nw > r));
     } else {
       debug_assert!(!(w < r && nw > r) && !(w >= nw && nw > r));
+    }
+    if nw == r {
+      self.empty = false;
     }
     self.write_idx = nw;
   }
@@ -83,7 +87,7 @@ impl RingBuffer {
     let l = self.len();
     let w = self.write_idx;
     let r = self.read_idx;
-    if r == w {
+    let data = if self.empty && r == w {
       Vec::new()
     } else if r < w {
       let available = w - r;
@@ -106,7 +110,11 @@ impl RingBuffer {
         data.append(&mut rest);
         data
       }
+    };
+    if self.read_idx == self.write_idx {
+      self.empty = true;
     }
+    data
   }
 
   pub fn len(&self) -> usize {
@@ -156,7 +164,7 @@ mod tests {
     let mut b = RingBuffer::new(5);
     b.push(&[1, 1, 1, 1, 1]);
     b.move_write_idx(5);
-    assert_eq!(b.write_idx, 5);
+    assert_eq!(b.write_idx, 0);
   }
 
   #[test]
@@ -185,5 +193,44 @@ mod tests {
     let d = b.pop(6);
     assert_eq!(d, vec![0, 1, 2, 3]);
     assert_eq!(b.read_idx, 4);
+  }
+
+  #[test]
+  fn test_pop_when_full() {
+    let mut b = RingBuffer::new(5);
+    b.push(&[1, 1, 1, 1, 1]);
+    b.move_write_idx(5);
+    assert_eq!(b.write_idx, 0);
+    let d = b.pop(1);
+    assert_eq!(d, vec![1]);
+    assert_eq!(b.read_idx, 1);
+    let d = b.pop(1);
+    assert_eq!(d, vec![1]);
+    assert_eq!(b.read_idx, 2);
+  }
+
+  #[test]
+  fn test_pop_when_full_two_sends() {
+    let mut b = RingBuffer::new(5);
+    assert!(b.empty);
+
+    b.push(&[1, 1, 1, 1, 1]);
+    b.move_write_idx(5);
+    assert_eq!(b.write_idx, 0);
+    assert!(!b.empty);
+
+    let d = b.pop(1);
+    assert_eq!(d, vec![1]);
+    assert_eq!(b.read_idx, 1);
+
+    b.push(&[2]);
+    b.move_write_idx(1);
+    assert_eq!(b.write_idx, 1);
+    assert!(!b.empty);
+
+    let d = b.pop(5);
+    assert_eq!(d, vec![1, 1, 1, 1, 2]);
+    assert_eq!(b.read_idx, 1);
+    assert!(b.empty);
   }
 }
