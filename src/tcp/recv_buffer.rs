@@ -11,19 +11,17 @@ use crate::{debug, edebug};
 #[derive(Debug)]
 struct WindowData {
   /// Left window edge (including) SEQ LAND
-  left:                    u32,
+  left:        u32,
   /// Right window edge (not including) SEQ LAND
-  right:                   u32,
+  right:       u32,
   /// Reader index (first valid data for reader to read) SEQ LAND
-  reader:                  u32,
-  /// Refers to the first valid initial_sequence_number (SEQ land)
-  initial_sequence_number: u32,
+  reader:      u32,
   /// Refers to the current ack (SEQ land)
-  current_ack:             u32,
+  current_ack: u32,
   /// Starts of intervals
-  starts:                  BTreeMap<u32, u32>,
+  starts:      BTreeMap<u32, u32>,
   /// Ends of intervals
-  ends:                    BTreeMap<u32, u32>,
+  ends:        BTreeMap<u32, u32>,
 }
 
 #[derive(Debug)]
@@ -38,43 +36,108 @@ pub(super) struct RecvBuffer {
 
 impl WindowData {
   fn get_interval_between(&self, s: u32, e: u32) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
-    let starts: Vec<_> = self
-      .starts
-      .range(s..=e)
-      .into_iter()
-      .filter_map(|(&st, &en)| {
-        let l = self.left;
-        let r = self.right;
-        if en <= l || st > r {
-          None
-        } else if st <= l && en > l {
-          Some((l, en))
-        } else if st < r && en >= r {
-          Some((st, r))
-        } else {
-          Some((st, en))
-        }
-      })
-      .collect();
-    let ends = self
-      .ends
-      .range(s..e)
-      .into_iter()
-      .filter_map(|(&en, &st)| {
-        let l = self.left;
-        let r = self.right;
-        if en <= l || st > r {
-          None
-        } else if st <= l && en > l {
-          Some((en, l))
-        } else if st < r && en >= r {
-          Some((r, st))
-        } else {
-          Some((en, st))
-        }
-      })
-      .collect();
-    (starts, ends)
+    dbg!(&self.starts, &self.ends, s, e);
+    let l = self.left;
+    let r = self.right;
+    if s > e {
+      if l <= r {
+        return (Vec::new(), Vec::new()); // can never have anything within window
+      }
+      let starts: Vec<_> = self
+        .starts
+        .range(s..)
+        .into_iter()
+        .chain(self.starts.range(..=e).into_iter())
+        .filter_map(|(&st, &en)| {
+          dbg!(st, en);
+          if st > en {
+            if st < l || en > r {
+              None
+            } else if st >= l && en > r {
+              Some((st, r))
+            } else if st < l && en <= r {
+              Some((l, en))
+            } else {
+              Some((st, en))
+            }
+          } else {
+            if en <= l && st > r {
+              None
+            } else if st <= l && en > l {
+              Some((l, en))
+            } else if st < r && en >= r {
+              Some((st, r))
+            } else {
+              Some((st, en))
+            }
+          }
+        })
+        .collect();
+      let ends = self
+        .ends
+        .range(s..)
+        .into_iter()
+        .chain(self.ends.range(..e).into_iter())
+        .filter_map(|(&en, &st)| {
+          if st > en {
+            if st < l || en > r {
+              None
+            } else if st >= l && en > r {
+              Some((r, st))
+            } else if st < l && en <= r {
+              Some((en, l))
+            } else {
+              Some((en, st))
+            }
+          } else {
+            if en <= l && st > r {
+              None
+            } else if st <= l && en > l {
+              Some((en, l))
+            } else if st < r && en >= r {
+              Some((r, st))
+            } else {
+              Some((en, st))
+            }
+          }
+        })
+        .collect();
+      (starts, ends)
+    } else {
+      let starts: Vec<_> = self
+        .starts
+        .range(s..=e)
+        .into_iter()
+        .filter_map(|(&st, &en)| {
+          if en <= l || st > r {
+            None
+          } else if st <= l && en > l {
+            Some((l, en))
+          } else if st < r && en >= r {
+            Some((st, r))
+          } else {
+            Some((st, en))
+          }
+        })
+        .collect();
+      let ends = self
+        .ends
+        .range(s..e)
+        .into_iter()
+        .filter_map(|(&en, &st)| {
+          if en <= l || st > r {
+            None
+          } else if st <= l && en > l {
+            Some((en, l))
+          } else if st < r && en >= r {
+            Some((r, st))
+          } else {
+            Some((en, st))
+          }
+        })
+        .collect();
+      (starts, ends)
+    }
   }
 
   fn handle_interval(&mut self, s: u32, e: u32) -> (u32, u32) {
@@ -123,8 +186,15 @@ impl WindowData {
         self.ends.remove(&e);
       }
 
-      let l = if *left_s < s { *left_s } else { s };
-      let r = if *right_e > e { *right_e } else { e };
+      let (l, r) = if s > e {
+        let l = if *left_s > s { *left_s } else { s };
+        let r = if *right_e < e { *right_e } else { e };
+        (l, r)
+      } else {
+        let l = if *left_s < s { *left_s } else { s };
+        let r = if *right_e > e { *right_e } else { e };
+        (l, r)
+      };
 
       self.starts.insert(l, r);
       self.ends.insert(r, l);
@@ -187,61 +257,76 @@ impl RecvBuffer {
 
     if win.left == win.right {
       todo!();
-    } else if win.left < win.right {
-      // no wrapping
-      let seg_l = seq_num;
-      let seg_r = seq_num + data.len() as u32;
+    }
+
+    let wrap = win.right < win.left;
+
+    // no wrapping
+    let seg_l = seq_num;
+    let seg_r = seq_num.wrapping_add(data.len() as u32);
+    let (has_l, has_r) = if wrap {
+      let has_l = (win.left..).contains(&seg_l) || (..win.right).contains(&seg_l);
+      let has_r = (win.left..).contains(&seg_r) || (..win.right).contains(&seg_r);
+      (has_l, has_r)
+    } else {
       let has_l = (win.left..win.right).contains(&seg_l);
       let has_r = (win.left..win.right).contains(&seg_r);
+      (has_l, has_r)
+    };
 
-      // If within interval, add data to buffer and update intervals
-      if let Some((interval_l, interval_r)) = if has_l && has_r {
-        // entirely in window
+    dbg!(seg_l, seg_r, has_l, has_r, wrap, win.right, win.left);
+    // If within interval, add data to buffer and update intervals
+    if let Some((interval_l, interval_r)) = if has_l && has_r {
+      // entirely in window
+      self
+        .buf
+        .push_with_offset(&data, (seq_num.wrapping_sub(win.left)) as usize);
+      Some(win.handle_interval(seg_l, seg_r))
+    } else if has_l && !has_r {
+      // start of data in window, right end is outside
+      self.buf.push_with_offset(
+        &data[..(win.right.wrapping_sub(seg_l)) as usize],
+        (seg_l.wrapping_sub(win.left)) as usize,
+      );
+      Some(win.handle_interval(seg_l, win.right))
+    } else if !has_l && has_r {
+      // start of data not in window, right end is inside
+      self.buf.push_with_offset(
+        &data[(win.left.wrapping_sub(seg_l)) as usize..],
+        (seg_l.wrapping_sub(win.left)) as usize,
+      );
+      Some(win.handle_interval(win.left, seg_r))
+    } else {
+      debug!("Dropping packet, outside of window");
+      None
+    } {
+      dbg!(interval_l, interval_r);
+      let wrap = interval_r < interval_l;
+      if interval_l == win.left
+        || (!wrap && (interval_l..interval_r).contains(&win.left))
+        || (wrap && ((interval_l..).contains(&win.left) || (..interval_r).contains(&win.left)))
+      {
+        win.current_ack = win
+          .current_ack
+          .wrapping_add(interval_r.wrapping_sub(win.left));
+        win.left = interval_r;
         self
           .buf
-          .push_with_offset(&data, (seq_num - win.left) as usize);
-        Some(win.handle_interval(seg_l, seg_r))
-      } else if has_l && !has_r {
-        // start of data in window, right end is outside
-        self.buf.push_with_offset(
-          &data[..(win.right - seg_l) as usize],
-          (seg_l - win.left) as usize,
-        );
-        Some(win.handle_interval(seg_l, win.right))
-      } else if !has_l && has_r {
-        // start of data not in window, right end is inside
-        self.buf.push_with_offset(
-          &data[(win.left - seg_l) as usize..],
-          (seg_l - win.left) as usize,
-        );
-        Some(win.handle_interval(win.left, seg_r))
-      } else {
-        debug!("Dropping packet, outside of window");
-        None
-      } {
-        if interval_l == win.left || (interval_l..interval_r).contains(&win.left) {
-          debug_assert!(interval_r > win.left);
-          win.current_ack = win.current_ack.wrapping_add(interval_r - win.left);
-          win.left = interval_r;
-          self.buf.move_write_idx((interval_r - interval_l) as usize);
-        }
+          .move_write_idx((interval_r.wrapping_sub(interval_l)) as usize);
       }
+    }
 
-      win.cleanup_intervals_outside_window();
-      if let Err(_) = self
-        .stream_send_tx
-        .send(StreamSendThreadMsg::Ack(win.current_ack))
-      {
-        edebug!("Could not send message to tcp_stream via stream_send_tx...");
-        Err(anyhow!(
-          "Could not send message to tcp_stream via stream_send_tx..."
-        ))
-      } else {
-        Ok(())
-      }
+    win.cleanup_intervals_outside_window();
+    if let Err(_) = self
+      .stream_send_tx
+      .send(StreamSendThreadMsg::Ack(win.current_ack))
+    {
+      edebug!("Could not send message to tcp_stream via stream_send_tx...");
+      Err(anyhow!(
+        "Could not send message to tcp_stream via stream_send_tx..."
+      ))
     } else {
-      // wrapping
-      todo!();
+      Ok(())
     }
   }
 
@@ -249,13 +334,12 @@ impl RecvBuffer {
     // accounts for SYN increment
     let isn_after_syn = initial_seq.wrapping_add(1);
     self.win = Some(WindowData {
-      left:                    isn_after_syn,
-      right:                   (MAX_WINDOW_SIZE as u32).wrapping_add(isn_after_syn),
-      reader:                  isn_after_syn,
-      initial_sequence_number: isn_after_syn,
-      current_ack:             isn_after_syn,
-      starts:                  BTreeMap::new(),
-      ends:                    BTreeMap::new(),
+      left:        isn_after_syn,
+      right:       (MAX_WINDOW_SIZE as u32).wrapping_add(isn_after_syn),
+      reader:      isn_after_syn,
+      current_ack: isn_after_syn,
+      starts:      BTreeMap::new(),
+      ends:        BTreeMap::new(),
     });
   }
 
@@ -372,5 +456,25 @@ mod test {
     let mut expected = vec![2u8; TCP_BUF_SIZE / 2];
     expected.append(&mut vec![1u8; TCP_BUF_SIZE - (TCP_BUF_SIZE / 2)]);
     assert_eq!(buf.buf.get_raw_buf().clone(), &expected);
+  }
+
+  #[test]
+  #[timeout(1000)]
+  /// Tests receiving ack when sequence number wraps around
+  fn test_recv_data_wrap_seq_num() {
+    let (mut buf, rcv_rx) = setup(u32::max_value() - 1);
+    send_and_check(&mut buf, &rcv_rx, u32::max_value(), vec![1, 1], 1);
+    let mut actual = vec![0, 0];
+    buf.read_data(&mut actual);
+    assert_eq!(actual, vec![1, 1]);
+  }
+
+  #[test]
+  #[timeout(1000)]
+  /// Tests receiving data when sequence number wraps around out of order
+  fn test_recv_data_wrap_seq_num_out_of_order() {
+    let (mut buf, rcv_rx) = setup(u32::max_value() - 1);
+    send_and_check(&mut buf, &rcv_rx, 2, vec![1, 1], u32::max_value());
+    send_and_check(&mut buf, &rcv_rx, u32::max_value(), vec![2, 2, 2], 4);
   }
 }
