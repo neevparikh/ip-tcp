@@ -9,7 +9,7 @@ use etherparse::{Ipv4Header, TcpHeader};
 
 use super::recv_buffer::RecvBuffer;
 use super::send_buffer::SendBuffer;
-use super::{IpTcpPacket, Port, TCP_BUF_SIZE};
+use super::{IpTcpPacket, Port};
 use crate::ip::protocol::Protocol;
 use crate::{debug, edebug, IpPacket};
 
@@ -437,7 +437,7 @@ impl TcpStream {
           Ok(())
         };
 
-      let handle_ack_of_fin = |tcp_header: &TcpHeader, send_buffer: &SendBuffer| {
+      let handle_ack_of_fin = |_tcp_header: &TcpHeader, send_buffer: &SendBuffer| {
         debug!("Received ack of fin");
         send_buffer.handle_ack_of_fin()
       };
