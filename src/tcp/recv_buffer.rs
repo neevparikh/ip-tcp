@@ -275,7 +275,8 @@ impl RecvBuffer {
       debug_assert_eq!(ready_slice.len(), bytes_asked_and_available);
       data[..bytes_asked_and_available].copy_from_slice(&mut ready_slice);
       win.reader = win.reader.wrapping_add(bytes_asked_and_available as u32);
-      win.right = win.reader.wrapping_add(TCP_BUF_SIZE as u32);
+      win.right = win.right.wrapping_add(bytes_asked_and_available as u32);
+      debug_assert_eq!(win.reader.wrapping_add(TCP_BUF_SIZE as u32), win.right);
     }
 
     bytes_asked_and_available
