@@ -1,7 +1,8 @@
+use std::fmt::Debug;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{thread, vec};
 
 use anyhow::{anyhow, Result};
@@ -9,7 +10,7 @@ use etherparse::{Ipv4Header, TcpHeader};
 
 use super::recv_buffer::RecvBuffer;
 use super::send_buffer::SendBuffer;
-use super::{IpTcpPacket, Port, MAX_WINDOW_SIZE};
+use super::{IpTcpPacket, Port, MAX_SEGMENT_LIFETIME, MAX_WINDOW_SIZE};
 use crate::ip::protocol::Protocol;
 use crate::{debug, edebug, IpPacket};
 
@@ -448,6 +449,8 @@ impl TcpStream {
         send_buffer.handle_ack_of_fin()
       };
 
+      let mut timewait_timeout = None;
+
       loop {
         match stream_rx.recv_timeout(Duration::from_millis(10)) {
           Ok((ip_header, tcp_header, data)) => {
@@ -533,26 +536,27 @@ impl TcpStream {
                 if tcp_header.fin {
                   if let Err(e) = handle_fin(&tcp_header, &mut stream, true) {
                     edebug!("{}", e);
-                    return;
+                    break;
                   }
                   stream.state = TcpStreamState::CloseWait;
                 }
 
                 if let Err(e) = handle_incoming_ack_data(&tcp_header, data, &mut stream) {
                   edebug!("{}", e);
-                  return;
+                  break;
                 }
               }
               TcpStreamState::Closed => {
                 edebug!(
                   "Packet received in Closed state: This should never probably never happen?"
                 );
+                break;
               }
               TcpStreamState::FinWait1 => {
                 if tcp_header.fin {
                   if let Err(e) = handle_fin(&tcp_header, &mut stream, true) {
                     edebug!("{}", e);
-                    return;
+                    break;
                   }
                   stream.state = TcpStreamState::Closing;
                 } else if tcp_header.ack && !tcp_header.fin {
@@ -563,20 +567,21 @@ impl TcpStream {
                 }
                 if let Err(e) = handle_incoming_ack_data(&tcp_header, data, &mut stream) {
                   edebug!("{}", e);
-                  return;
+                  break;
                 }
               }
               TcpStreamState::FinWait2 => {
                 if tcp_header.fin {
                   if let Err(e) = handle_fin(&tcp_header, &mut stream, true) {
                     edebug!("{}", e);
-                    return;
+                    break;
                   }
                   stream.state = TcpStreamState::TimeWait;
+                  timewait_timeout = Some(Instant::now() + MAX_SEGMENT_LIFETIME);
                 }
                 if let Err(e) = handle_incoming_ack_data(&tcp_header, data, &mut stream) {
                   edebug!("{}", e);
-                  return;
+                  break;
                 }
               }
               TcpStreamState::CloseWait => {
@@ -584,7 +589,7 @@ impl TcpStream {
                 if tcp_header.fin {
                   if let Err(e) = handle_fin(&tcp_header, &mut stream, false) {
                     edebug!("{}", e);
-                    return;
+                    break;
                   }
                 }
 
@@ -594,7 +599,7 @@ impl TcpStream {
                   {
                     edebug!("Failed to handle ack {e}, closing...");
                     stream.state = TcpStreamState::Closed;
-                    return;
+                    break;
                   }
                 }
               }
@@ -603,7 +608,7 @@ impl TcpStream {
                 if tcp_header.fin {
                   if let Err(e) = handle_fin(&tcp_header, &mut stream, false) {
                     edebug!("{}", e);
-                    return;
+                    break;
                   }
                 }
 
@@ -611,11 +616,11 @@ impl TcpStream {
                   if tcp_header.acknowledgment_number == stream.next_seq {
                     handle_ack_of_fin(&tcp_header, &*send_buffer);
                     stream.state = TcpStreamState::TimeWait;
+                    timewait_timeout = Some(Instant::now() + MAX_SEGMENT_LIFETIME);
                   }
                 }
               }
               TcpStreamState::TimeWait => {
-                // TODO: timeout for timewait
                 edebug!("Received packet in TimeWait");
               }
               TcpStreamState::LastAck => {
@@ -623,7 +628,7 @@ impl TcpStream {
                 if tcp_header.fin {
                   if let Err(e) = handle_fin(&tcp_header, &mut stream, false) {
                     edebug!("{}", e);
-                    return;
+                    break;
                   }
                 }
 
@@ -631,12 +636,25 @@ impl TcpStream {
                   if tcp_header.acknowledgment_number == stream.next_seq {
                     handle_ack_of_fin(&tcp_header, &*send_buffer);
                     stream.state = TcpStreamState::Closed;
+                    break;
                   }
                 }
               }
             }
           }
-          Err(RecvTimeoutError::Timeout) => (),
+          Err(RecvTimeoutError::Timeout) => {
+            let stream = stream.lock().unwrap();
+            if stream.state == TcpStreamState::Closed {
+              debug!("State is CLOSED, closing...");
+              break;
+            }
+            if let Some(timeout) = timewait_timeout {
+              if Instant::now() > timeout {
+                debug!("MSL timed out, state is now CLOSED, closing...");
+                break;
+              }
+            }
+          }
           Err(RecvTimeoutError::Disconnected) => {
             let mut stream = stream.lock().unwrap();
             stream.state = TcpStreamState::Closed;
