@@ -77,41 +77,6 @@ impl WindowData {
     (starts, ends)
   }
 
-  fn cleanup_intervals_outside_window(&mut self) {
-    let remove: Vec<_> = if self.right <= self.left {
-      self
-        .starts
-        .range(self.right..self.left)
-        .into_iter()
-        .filter_map(|(&s, &e)| {
-          if (self.right..=self.left).contains(&e) {
-            Some((s, e))
-          } else {
-            None
-          }
-        })
-        .collect()
-    } else {
-      self
-        .starts
-        .range(0..self.left)
-        .into_iter()
-        .chain(self.starts.range(self.right..).into_iter())
-        .filter_map(|(&s, &e)| {
-          if (0..=self.left).contains(&e) || (self.right..).contains(&e) {
-            Some((s, e))
-          } else {
-            None
-          }
-        })
-        .collect()
-    };
-    for (s, e) in remove {
-      self.starts.remove(&s);
-      self.ends.remove(&e);
-    }
-  }
-
   fn handle_interval(&mut self, s: u32, e: u32) -> (u32, u32) {
     let (starts, ends) = self.get_interval_between(s, e);
     if starts.len() == 0 && ends.len() == 0 {
@@ -165,6 +130,41 @@ impl WindowData {
       self.ends.insert(r, l);
 
       (l, r)
+    }
+  }
+
+  fn cleanup_intervals_outside_window(&mut self) {
+    let remove: Vec<_> = if self.right <= self.left {
+      self
+        .starts
+        .range(self.right..self.left)
+        .into_iter()
+        .filter_map(|(&s, &e)| {
+          if (self.right..=self.left).contains(&e) {
+            Some((s, e))
+          } else {
+            None
+          }
+        })
+        .collect()
+    } else {
+      self
+        .starts
+        .range(0..self.left)
+        .into_iter()
+        .chain(self.starts.range(self.right..).into_iter())
+        .filter_map(|(&s, &e)| {
+          if (0..=self.left).contains(&e) || (self.right..).contains(&e) {
+            Some((s, e))
+          } else {
+            None
+          }
+        })
+        .collect()
+    };
+    for (s, e) in remove {
+      self.starts.remove(&s);
+      self.ends.remove(&e);
     }
   }
 }
