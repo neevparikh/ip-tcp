@@ -17,6 +17,7 @@ const RTO_UBOUND: Duration = Duration::from_secs(60);
 const RTO_BETA: f32 = 2f32;
 const SRTT_ALPHA: f32 = 0.8f32;
 const INITIAL_SRTT: Duration = Duration::from_millis(1500);
+const ZERO_WINDOW_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, PartialEq)]
 enum WindowElementType {
@@ -261,6 +262,7 @@ impl SendBuffer {
     wake_send_thread_tx: Sender<()>,
   ) {
     let window = self.window.clone();
+    let buf = self.buf.clone();
     thread::spawn(move || loop {
       let window = window.read().unwrap();
       let most_urgent_elem = window.elems.iter().reduce(|acc, item| {
@@ -275,10 +277,15 @@ impl SendBuffer {
       } else {
         None
       };
-      drop(window);
 
-      if let Some(time_to_retry) = time_to_retry {
-        let now = Instant::now();
+      let now = Instant::now();
+      let buf_len = buf.lock().unwrap().data.len();
+      let bytes_in_window = window.bytes_in_window;
+      if let Some(mut time_to_retry) = time_to_retry {
+        if window.recv_window_size == 0 && buf_len > bytes_in_window {
+          time_to_retry = time_to_retry.min(now + ZERO_WINDOW_PROBE_TIMEOUT);
+        }
+
         if time_to_retry > now {
           thread::sleep(time_to_retry.duration_since(now));
         }
@@ -287,7 +294,16 @@ impl SendBuffer {
           edebug!("timeout thread died");
           break;
         }
+      } else {
+        if window.recv_window_size == 0 && buf_len > bytes_in_window {
+          thread::sleep(ZERO_WINDOW_PROBE_TIMEOUT);
+          if wake_send_thread_tx.send(()).is_err() {
+            edebug!("timeout thread died");
+            break;
+          }
+        }
       }
+      drop(window);
 
       match wake_timeout_thread_rx.recv() {
         Ok(()) => debug!("timeout thread woken"),
@@ -361,9 +377,21 @@ impl SendBuffer {
       };
 
       let max_window_size = window.max_size.min(window.recv_window_size as usize);
+      let mut zero_window_probe = window.recv_window_size == 0 && distance_to_end > 0;
+
+      if zero_window_probe {
+        let send_res = stream_send_tx.send(StreamSendThreadMsg::Outgoing(
+          curr_seq,
+          Vec::from_iter(buf.read(curr_seq, 1).copied()),
+        ));
+
+        if send_res.is_err() {
+          debug!("Sending to stream failed in SendBuffer, closing");
+          return;
+        }
+      }
 
       while window.bytes_in_window < max_window_size && distance_to_end > 0 {
-        debug!("Sending up a level");
         let bytes_left_to_send = max_window_size - window.bytes_in_window;
         let bytes_to_send = bytes_left_to_send.min(MTU).min(distance_to_end);
         let send_res = stream_send_tx.send(StreamSendThreadMsg::Outgoing(

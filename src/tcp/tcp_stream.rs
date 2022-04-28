@@ -475,7 +475,6 @@ impl TcpStream {
               TcpStreamState::SynReceived => {
                 if tcp_header.ack {
                   let window_size = tcp_header.window_size;
-                  debug_assert!(tcp_header.acknowledgment_number == stream.initial_ack.unwrap());
                   if let Err(e) = send_buffer.handle_ack_of_syn(window_size) {
                     edebug!("Failed to handle ack of syn {e}, closing...");
                     // Don't stop here, this could be because of a duplicate syn ack send
