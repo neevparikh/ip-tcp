@@ -150,7 +150,7 @@ mod tests {
 
     let d = b.pop(2);
     assert_eq!(d, vec![0, 1]);
-    assert_eq!(b.read_idx, 1);
+    assert_eq!(b.read_idx, 2);
   }
 
   #[test]
@@ -158,7 +158,7 @@ mod tests {
     let mut b = RingBuffer::new(5);
     b.push(&[1, 1, 1, 1, 1]);
     b.move_write_idx(5);
-    assert_eq!(b.write_idx, 0);
+    assert_eq!(b.write_idx, 5);
   }
 
   #[test]
@@ -169,9 +169,11 @@ mod tests {
     assert_eq!(b.write_idx, 3);
     assert_eq!(b.get_raw_buf().clone(), vec![1, 1, 1, 0, 0]);
     b.pop(2);
-    assert_eq!(b.read_idx, 1);
+    assert_eq!(b.read_idx, 2);
     assert_eq!(b.write_idx, 3);
     b.push(&[2, 2, 2, 2]);
+    b.move_write_idx(4);
+    assert_eq!(b.write_idx, 2);
     assert_eq!(b.get_raw_buf().clone(), vec![2, 2, 1, 2, 2]);
   }
 
@@ -184,6 +186,6 @@ mod tests {
 
     let d = b.pop(6);
     assert_eq!(d, vec![0, 1, 2, 3]);
-    assert_eq!(b.read_idx, 3);
+    assert_eq!(b.read_idx, 4);
   }
 }
