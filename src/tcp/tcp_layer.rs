@@ -138,9 +138,14 @@ impl TcpLayer {
     }
   }
 
-  pub fn accept(&self, port: Port) {
+  pub fn accept(&mut self, port: Port) {
+    if self.used_ports.contains(&port) {
+      eprintln!("Error: port {port} in use");
+      return;
+    }
     let stream = TcpStream::listen(port, self.ip_send_tx.clone());
     self.streams.write().unwrap().push(Arc::new(stream));
+    self.used_ports.insert(port);
   }
 
   pub fn connect(&mut self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr, dst_port: Port) {
