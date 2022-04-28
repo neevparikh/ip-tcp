@@ -51,8 +51,9 @@ impl RingBuffer {
 
   /// move write head
   pub fn move_write_idx(&mut self, num_bytes: usize) {
-    self.write_idx = self.wrapping_add(self.write_idx, num_bytes);
-    debug_assert!(self.write_idx <= self.read_idx);
+    let w = self.wrapping_add(self.write_idx, num_bytes);
+    debug_assert!(!(self.write_idx < self.read_idx && self.read_idx < w));
+    self.write_idx = w;
   }
 
   pub fn push(&mut self, data: &[u8]) {
