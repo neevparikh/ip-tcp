@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, RwLock};
@@ -18,7 +19,8 @@ pub struct TcpLayer {
   ip_send_tx:  Sender<IpPacket>,
   tcp_recv_tx: Sender<IpTcpPacket>,
 
-  /// TODO: this should probably be a map but idk what the keys should be
+  used_ports: BTreeSet<Port>,
+
   streams: StreamMap,
 }
 
@@ -28,31 +30,49 @@ impl TcpLayer {
     let tcp_layer = TcpLayer {
       ip_send_tx,
       tcp_recv_tx,
+      used_ports: BTreeSet::new(),
       streams: Arc::new(RwLock::new(Vec::new())),
     };
     tcp_layer.start_stream_dispatcher(tcp_recv_rx);
     tcp_layer
   }
 
+  fn get_new_port(&mut self) -> Port {
+    if self.used_ports.len() == 0 {
+      self.used_ports.insert(1024);
+      1024
+    } else {
+      let mut prev_port = 1023;
+      for &port in self.used_ports.iter() {
+        if prev_port + 1 < port {
+          self.used_ports.insert(prev_port + 1);
+          return prev_port + 1;
+        }
+        prev_port += 1;
+      }
+      self.used_ports.insert(prev_port);
+      return prev_port;
+    }
+  }
+
   /// Starts thread that handles all incoming TcpPackets and routes them appropriately
   pub fn start_stream_dispatcher(&self, tcp_recv_rx: Receiver<IpTcpPacket>) {
     let streams = self.streams.clone();
-    thread::spawn(move || {
-      // TODO add cleanup
-      loop {
-        // TODO: should this be timeout
-        match tcp_recv_rx.recv() {
-          Ok((ip_header, tcp_header, data)) => {
-            let dst_port = tcp_header.destination_port;
-            let streams = streams.read().unwrap();
-            let stream: Vec<_> = streams
-              .iter()
-              .filter(|&s| {
-                let src_port = s.source_port();
-                src_port == dst_port
-              })
-              .collect();
-            // TODO handle this better -> what if there are no streams that match
+    thread::spawn(move || loop {
+      match tcp_recv_rx.recv() {
+        Ok((ip_header, tcp_header, data)) => {
+          let dst_port = tcp_header.destination_port;
+          let streams = streams.read().unwrap();
+          let stream: Vec<_> = streams
+            .iter()
+            .filter(|&s| {
+              let src_port = s.source_port();
+              src_port == dst_port
+            })
+            .collect();
+          if stream.len() < 1 {
+            debug!("No matching source_port, dropping packet");
+          } else if stream.len() == 1 {
             debug_assert_eq!(stream.len(), 1);
             match stream[0].process((ip_header, tcp_header, data)) {
               Ok(()) => (),
@@ -61,11 +81,13 @@ impl TcpLayer {
                 break;
               }
             }
+          } else {
+            panic!("Fatal: Duplicate streams for the same port!");
           }
-          Err(_e) => {
-            debug!("Exiting...");
-            break;
-          }
+        }
+        Err(_e) => {
+          debug!("Exiting...");
+          break;
         }
       }
     });
@@ -108,14 +130,11 @@ impl TcpLayer {
     }
   }
 
-  pub fn print_window(&self, socket: SocketId) {
+  pub fn print_window(&self, socket_id: SocketId) {
     let streams = self.streams.read().unwrap();
-    let num_streams = streams.len();
-    if !(0..num_streams).contains(&socket) {
-      eprintln!("Invalid socket_id {socket}, must be within 0..{num_streams}");
-    } else {
-      let stream = &streams[socket];
-      println!("Window size: {}", stream.get_window_size());
+    match streams.get(socket_id) {
+      Some(stream) => println!("Window size: {}", stream.get_window_size()),
+      None => eprintln!("Unknown socket_id: {socket_id}"),
     }
   }
 
@@ -124,12 +143,11 @@ impl TcpLayer {
     self.streams.write().unwrap().push(Arc::new(stream));
   }
 
-  pub fn connect(&self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr, dst_port: Port) {
-    // TODO: should keep track of available ports and assign source port from there
-    let source_ip = 1024;
+  pub fn connect(&mut self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr, dst_port: Port) {
+    let src_port = self.get_new_port();
+    let ip_send_tx = self.ip_send_tx.clone();
     // TODO: pass error back up?
-    let stream =
-      TcpStream::connect(src_ip, source_ip, dst_ip, dst_port, self.ip_send_tx.clone()).unwrap();
+    let stream = TcpStream::connect(src_ip, src_port, dst_ip, dst_port, ip_send_tx).unwrap();
     self.streams.write().unwrap().push(Arc::new(stream));
   }
 
@@ -176,7 +194,18 @@ impl TcpLayer {
   }
 
   pub fn close(&self, socket_id: SocketId) {
-    todo!()
+    let streams = self.streams.read().unwrap();
+    let stream = match streams.get(socket_id) {
+      Some(stream) => stream,
+      None => {
+        debug!("Unknown socket_id: {socket_id}");
+        return;
+      }
+    };
+
+    if let Err(e) = stream.close() {
+      debug!("Error: {e}")
+    }
   }
 
   pub fn send_file(&self, filename: String, ip: Ipv4Addr, port: Port) {
