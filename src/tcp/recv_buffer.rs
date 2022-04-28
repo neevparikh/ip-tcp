@@ -266,18 +266,17 @@ impl RecvBuffer {
       .as_mut()
       .expect("Fatal: Cannot call handle_seq without initializing with ISN");
 
-    let bytes_available = win.left.wrapping_sub(win.reader) as usize;
+    let bytes_asked_and_available = (win.left.wrapping_sub(win.reader) as usize).min(data.len());
 
-    if bytes_available > 0 {
-      let data = &mut data[..bytes_available];
-      let mut ready_slice = self.buf.pop(bytes_available);
-      debug_assert_eq!(ready_slice.len(), bytes_available);
-      data[..bytes_available].copy_from_slice(&mut ready_slice);
-      win.reader = win.reader.wrapping_add(bytes_available as u32);
+    if bytes_asked_and_available > 0 {
+      let mut ready_slice = self.buf.pop(bytes_asked_and_available);
+      debug_assert_eq!(ready_slice.len(), bytes_asked_and_available);
+      data[..bytes_asked_and_available].copy_from_slice(&mut ready_slice);
+      win.reader = win.reader.wrapping_add(bytes_asked_and_available as u32);
       win.right = win.reader.wrapping_add(TCP_BUF_SIZE as u32);
     }
 
-    bytes_available
+    bytes_asked_and_available
   }
 }
 
