@@ -52,18 +52,19 @@ struct WindowElement {
 
 #[derive(Debug)]
 struct SendWindow {
-  pub elems:            VecDeque<WindowElement>,
+  pub elems:               VecDeque<WindowElement>,
   /// Refers to the first byte refered to by the first element of the sliding_window
   /// This should in general correspond to the last ack number received
-  starting_sequence:    u32,
+  starting_sequence:       u32,
   /// Number of bytes currently referenced by elements in the window
-  pub bytes_in_window:  usize,
+  pub bytes_in_window:     usize,
   /// max_size is the max we are willing to send
-  pub max_size:         usize,
+  pub max_size:            usize,
   /// recv_window_size is the max they are willing to recveive
-  pub recv_window_size: u16,
+  pub recv_window_size:    u16,
+  pub zero_window_probing: bool,
   /// Smoothed Round Trip Time
-  srtt:                 Duration,
+  srtt:                    Duration,
 }
 
 #[derive(Debug)]
@@ -105,12 +106,13 @@ impl SendBuffer {
       buf_cond: Arc::new(Condvar::new()),
 
       window: Arc::new(RwLock::new(SendWindow {
-        starting_sequence: first_seq,
-        elems:             VecDeque::with_capacity(MAX_WINDOW_SIZE),
-        bytes_in_window:   0usize,
-        max_size:          TCP_BUF_SIZE, // TODO: what should this be to start
-        recv_window_size:  0,            // This will be initialized when we receive SYNACK/ACK
-        srtt:              INITIAL_SRTT,
+        starting_sequence:   first_seq,
+        elems:               VecDeque::with_capacity(MAX_WINDOW_SIZE),
+        bytes_in_window:     0usize,
+        max_size:            TCP_BUF_SIZE, // TODO: what should this be to start
+        recv_window_size:    0,            // This will be initialized when we receive SYNACK/ACK
+        zero_window_probing: false,
+        srtt:                INITIAL_SRTT,
       })),
 
       wake_send_thread_tx: Arc::new(Mutex::new(wake_send_thread_tx.clone())),
@@ -262,7 +264,6 @@ impl SendBuffer {
     wake_send_thread_tx: Sender<()>,
   ) {
     let window = self.window.clone();
-    let buf = self.buf.clone();
     thread::spawn(move || loop {
       let window = window.read().unwrap();
       let most_urgent_elem = window.elems.iter().reduce(|acc, item| {
@@ -279,10 +280,10 @@ impl SendBuffer {
       };
 
       let now = Instant::now();
-      let buf_len = buf.lock().unwrap().data.len();
-      let bytes_in_window = window.bytes_in_window;
+      let zero_window_probing = window.zero_window_probing;
+      drop(window);
       if let Some(mut time_to_retry) = time_to_retry {
-        if window.recv_window_size == 0 && buf_len > bytes_in_window {
+        if zero_window_probing {
           time_to_retry = time_to_retry.min(now + ZERO_WINDOW_PROBE_TIMEOUT);
         }
 
@@ -295,7 +296,7 @@ impl SendBuffer {
           break;
         }
       } else {
-        if window.recv_window_size == 0 && buf_len > bytes_in_window {
+        if zero_window_probing {
           thread::sleep(ZERO_WINDOW_PROBE_TIMEOUT);
           if wake_send_thread_tx.send(()).is_err() {
             edebug!("timeout thread died");
@@ -303,7 +304,6 @@ impl SendBuffer {
           }
         }
       }
-      drop(window);
 
       match wake_timeout_thread_rx.recv() {
         Ok(()) => debug!("timeout thread woken"),
@@ -380,6 +380,7 @@ impl SendBuffer {
       let mut zero_window_probe = window.recv_window_size == 0 && distance_to_end > 0;
 
       if zero_window_probe {
+        window.zero_window_probing = true;
         let send_res = stream_send_tx.send(StreamSendThreadMsg::Outgoing(
           curr_seq,
           Vec::from_iter(buf.read(curr_seq, 1).copied()),
@@ -479,6 +480,10 @@ impl SendWindow {
     let in_window_no_wrapping = ack_num > window_start && ack_num <= window_end;
     let in_window_wrapping = window_end < window_start && ack_num <= window_end;
     if !(in_window_wrapping || in_window_no_wrapping) {
+      if self.zero_window_probing {
+        self.zero_window_probing = false;
+        return 1u32;
+      }
       return 0u32;
     }
 

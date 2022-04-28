@@ -19,10 +19,10 @@ pub type IpTcpPacket = (Ipv4Header, TcpHeader, Vec<u8>);
 // When data transfer size is extremely large, you might want to set the buffer sizes up to the
 // maximum value to improve throughput, reduce the occurrence of flow control, and reduce CPU
 // cost."
-const TCP_BUF_SIZE: usize = u16::max_value() as usize;
+const TCP_BUF_SIZE: usize = 10;
 
 // Max number of packets which can be in flight at a given time
-const MAX_WINDOW_SIZE: usize = u16::max_value() as usize;
+const MAX_WINDOW_SIZE: usize = 10;
 
 // See this thread for discussion of MTU choice
 // https://stackoverflow.com/questions/2613734/maximum-packet-size-for-a-tcp-connection

@@ -446,7 +446,7 @@ impl TcpStream {
         match stream_rx.recv_timeout(Duration::from_millis(10)) {
           Ok((ip_header, tcp_header, data)) => {
             let mut stream = stream.lock().unwrap();
-            match stream.state {
+            match dbg!(stream.state) {
               TcpStreamState::Listen => {
                 if tcp_header.syn {
                   let ip: Ipv4Addr = ip_header.source.into();
