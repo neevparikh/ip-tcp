@@ -247,6 +247,15 @@ impl RecvBuffer {
     }
   }
 
+  pub fn get_window_size(&self) -> u16 {
+    let win = self
+      .win
+      .as_ref()
+      .expect("Fatal: Cannot call handle_seq without initializing with ISN");
+    // safe because MAX_WINDOW_SIZE <= u16::max_value
+    win.right.wrapping_sub(win.left) as u16
+  }
+
   pub fn handle_seq(&mut self, seq_num: u32, data: &[u8]) -> Result<()> {
     let win = self
       .win
@@ -314,10 +323,10 @@ impl RecvBuffer {
     }
 
     win.cleanup_intervals_outside_window();
-    if let Err(_) = self
-      .stream_send_tx
-      .send(StreamSendThreadMsg::Ack(win.current_ack))
-    {
+    if let Err(_) = self.stream_send_tx.send(StreamSendThreadMsg::Ack(
+      win.current_ack,
+      self.get_window_size(),
+    )) {
       edebug!("Could not send message to tcp_stream via stream_send_tx...");
       Err(anyhow!(
         "Could not send message to tcp_stream via stream_send_tx..."
@@ -356,6 +365,15 @@ impl RecvBuffer {
       win.reader = win.reader.wrapping_add(bytes_asked_and_available as u32);
       win.right = win.right.wrapping_add(bytes_asked_and_available as u32);
       debug_assert_eq!(win.reader.wrapping_add(TCP_BUF_SIZE as u32), win.right);
+      if let Err(_) = self
+        .stream_send_tx
+        .send(StreamSendThreadMsg::UpdateWindowSize(
+          self.get_window_size(),
+        ))
+      {
+        edebug!("Could not send message to tcp_stream via stream_send_tx...");
+        return 0;
+      }
     }
 
     bytes_asked_and_available
@@ -379,7 +397,7 @@ mod test {
 
   fn check_ack(rx: &Receiver<StreamSendThreadMsg>, expected_ack: u32) {
     match rx.recv() {
-      Ok(StreamSendThreadMsg::Ack(actual_ack)) => {
+      Ok(StreamSendThreadMsg::Ack(actual_ack, _)) => {
         println!("{actual_ack}");
         assert_eq!(actual_ack, expected_ack)
       }

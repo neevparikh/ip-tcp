@@ -109,7 +109,9 @@ impl TcpLayer {
   }
 
   pub fn print_window(&self, socket: SocketId) {
-    todo!()
+    // let streams =
+    // if !(0..self.streams.read().unwrap().len())socket
+    // let stream = self.streams.read().unwrap()[socket];
   }
 
   pub fn accept(&self, port: Port) {

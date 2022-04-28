@@ -138,7 +138,7 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
     "interfaces" | "li" => ip_layer.print_interfaces(),
     "routes" | "lr" => ip_layer.print_routes(),
     "sockets" | "ls" => tcp_layer.print_sockets(),
-    "window" | "lw" => (),
+    "window" | "lw" => tcp_layer.print_window(parse_num(tokens)?),
 
     "accept" | "a" => tcp_layer.accept(parse_num(tokens)?),
     "connect" | "c" => {

@@ -68,8 +68,10 @@ struct TcpStreamInternal {
   initial_ack:             Option<u32>,
 
   /// Used to set sequence number on acks and ack number of data packets
-  last_ack: Option<u32>,
-  next_seq: u32,
+  last_ack:         Option<u32>,
+  /// Last window size
+  last_window_size: u16,
+  next_seq:         u32,
 
   /// state
   state:      TcpStreamState,
@@ -81,7 +83,11 @@ pub(super) enum StreamSendThreadMsg {
   /// sequence number, data
   Syn,
   Outgoing(u32, Vec<u8>),
-  Ack(u32),
+  /// ack num and window size
+  Ack(u32, u16),
+
+  /// new window size after read
+  UpdateWindowSize(u16),
   /// includes seq num
   Fin(u32),
 
@@ -125,6 +131,7 @@ impl TcpStream {
       initial_sequence_number,
       initial_ack: None,
       last_ack: None,
+      last_window_size: 0,
       next_seq: initial_sequence_number.wrapping_add(1),
       state: initial_state,
       ip_send_tx: ip_send_tx.clone(),
@@ -203,6 +210,11 @@ impl TcpStream {
   /// get stream state
   pub fn state(&self) -> TcpStreamState {
     self.internal.lock().unwrap().state()
+  }
+
+  /// get window size
+  pub fn get_window_size(&self) -> u16 {
+    self.recv_buffer.lock().unwrap().get_window_size()
   }
 
   /// Called by TcpLayer when it receives a packet for this stream, sends to listen thread to
@@ -336,8 +348,9 @@ impl TcpStream {
             }
           }
         }
-        Ok(StreamSendThreadMsg::Ack(ack_num)) => {
+        Ok(StreamSendThreadMsg::Ack(ack_num, window_size)) => {
           let mut stream = stream.lock().unwrap();
+          stream.last_window_size = window_size;
           stream.last_ack = Some(ack_num);
           if VALID_ACK_STATES.contains(&stream.state) {
             if let Err(_e) = stream.send_ack(ack_num) {
@@ -345,6 +358,10 @@ impl TcpStream {
               break;
             }
           }
+        }
+        Ok(StreamSendThreadMsg::UpdateWindowSize(window_size)) => {
+          let mut stream = stream.lock().unwrap();
+          stream.last_window_size = window_size;
         }
         Ok(StreamSendThreadMsg::Fin(seq_num)) => {
           let mut stream = stream.lock().unwrap();
@@ -727,7 +744,7 @@ impl TcpStreamInternal {
       self.source_port,
       self.destination_port.unwrap(),
       self.initial_sequence_number,
-      TCP_BUF_SIZE as u16, // TODO see slow start
+      self.last_window_size,
     )
   }
 
