@@ -55,7 +55,6 @@ pub enum TcpStreamState {
   Closing,
 }
 
-#[derive(Debug)]
 struct TcpStreamInternal {
   source_ip:               Option<Ipv4Addr>,
   /// Constant properties of the stream
@@ -96,7 +95,6 @@ pub(super) enum StreamSendThreadMsg {
   Shutdown,
 }
 
-#[derive(Debug)]
 pub struct TcpStream {
   internal: Arc<Mutex<TcpStreamInternal>>,
 
@@ -119,6 +117,7 @@ impl TcpStream {
     destination_port: Option<Port>,
     initial_state: TcpStreamState,
     ip_send_tx: Sender<IpPacket>,
+    cleanup: Box<dyn Fn() + Send>,
   ) -> TcpStream {
     let (stream_tx, stream_rx) = mpsc::channel();
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
@@ -152,6 +151,7 @@ impl TcpStream {
       recv_buffer_cond.clone(),
       send_buffer.clone(),
       stream_rx,
+      cleanup,
     );
     TcpStream::start_send_thread(internal.clone(), send_thread_rx);
 
@@ -164,7 +164,11 @@ impl TcpStream {
     }
   }
 
-  pub fn listen(source_port: Port, ip_send_tx: Sender<IpPacket>) -> TcpStream {
+  pub fn listen(
+    source_port: Port,
+    ip_send_tx: Sender<IpPacket>,
+    cleanup: Box<dyn Fn() + Send>,
+  ) -> TcpStream {
     TcpStream::new(
       None,
       source_port,
@@ -172,6 +176,7 @@ impl TcpStream {
       None,
       TcpStreamState::Listen,
       ip_send_tx,
+      cleanup,
     )
   }
 
@@ -181,6 +186,7 @@ impl TcpStream {
     destination_ip: Ipv4Addr,
     destination_port: Port,
     ip_send_tx: Sender<IpPacket>,
+    cleanup: Box<dyn Fn() + Send>,
   ) -> Result<TcpStream> {
     let new_stream = TcpStream::new(
       Some(source_ip),
@@ -189,6 +195,7 @@ impl TcpStream {
       Some(destination_port),
       TcpStreamState::SynSent,
       ip_send_tx,
+      cleanup,
     );
 
     new_stream.send_buffer.send_syn()?;
@@ -232,7 +239,7 @@ impl TcpStream {
   }
 
   /// Called by TcpLayer
-  /// TODO: what is the behavior if the stream dies while blocked: ans: return err
+  /// TODO: tell recv_buffer_cond on close
   pub fn recv(&self, num_bytes: usize, should_block: bool) -> Result<Vec<u8>> {
     let mut data = vec![0u8; num_bytes];
     let mut bytes_read = 0;
@@ -309,7 +316,6 @@ impl TcpStream {
     }
   }
 
-  // TODO maybe better name?
   /// Handles sending packets from send buffer (to send data out) and handles sending acks for
   /// recieved data from recv buffer.
   fn start_send_thread(
@@ -376,7 +382,10 @@ impl TcpStream {
             if seq_num >= stream.next_seq {
               stream.next_seq = seq_num + 1;
             }
-            stream.send_fin(seq_num);
+            if let Err(_e) = stream.send_fin(seq_num) {
+              edebug!("Failed to send fin for seq {seq_num}");
+              break;
+            }
           }
         }
         Ok(StreamSendThreadMsg::Shutdown) => {
@@ -400,6 +409,7 @@ impl TcpStream {
     recv_buffer_cond: Arc<Condvar>,
     send_buffer: Arc<SendBuffer>,
     stream_rx: Receiver<IpTcpPacket>,
+    cleanup: Box<dyn Fn() + Send>,
   ) {
     thread::spawn(move || {
       let handle_incoming_ack_data =
@@ -663,6 +673,9 @@ impl TcpStream {
           }
         }
       }
+      debug!("Cleanup called, exiting...");
+      cleanup();
+      debug!("BYE");
     });
   }
 
@@ -756,11 +769,6 @@ impl TcpStreamInternal {
     self.ip_send_tx.send(ip_msg)?;
     Ok(())
   }
-
-  /// Close is a overloaded term when dealing with sockets. This function corresponds to the
-  /// sending the CLOSE command as described in the RFC. This corresponds to calling shutdown with
-  /// the method set to write.
-  pub fn close(&self) {}
 
   fn make_default_tcp_header(&self) -> TcpHeader {
     debug_assert!(self.destination_port.is_some());

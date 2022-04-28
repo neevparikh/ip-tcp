@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, RwLock};
@@ -12,14 +12,20 @@ use super::tcp_stream::TcpStream;
 use super::{IpTcpPacket, Port};
 use crate::{debug, edebug, HandlerFunction, IpPacket};
 
-type StreamMap = Arc<RwLock<Vec<Arc<TcpStream>>>>;
+type StreamMap = Arc<RwLock<BTreeMap<SocketId, Arc<TcpStream>>>>;
 
 #[derive(Debug)]
+pub enum LayerStreamMsg {
+  /// Clean up stream
+  Closed(SocketId),
+}
+
 pub struct TcpLayer {
   ip_send_tx:  Sender<IpPacket>,
   tcp_recv_tx: Sender<IpTcpPacket>,
 
-  used_ports: BTreeSet<Port>,
+  used_ports:     BTreeSet<Port>,
+  next_socket_id: SocketId,
 
   streams: StreamMap,
 }
@@ -31,10 +37,28 @@ impl TcpLayer {
       ip_send_tx,
       tcp_recv_tx,
       used_ports: BTreeSet::new(),
-      streams: Arc::new(RwLock::new(Vec::new())),
+      next_socket_id: 0,
+      streams: Arc::new(RwLock::new(BTreeMap::new())),
     };
     tcp_layer.start_stream_dispatcher(tcp_recv_rx);
     tcp_layer
+  }
+
+  fn make_cleanup_callback(&self, socket_id: SocketId) -> Box<dyn Fn() + Send> {
+    let stream_map = self.streams.clone();
+    Box::new(move || {
+      debug!("Waiting on stream map lock");
+      let mut sm = stream_map.write().unwrap();
+      debug!("Got stream map lock");
+      sm.remove(&socket_id);
+      debug!("Removed");
+    })
+  }
+
+  fn get_new_socket(&mut self) -> SocketId {
+    let s = self.next_socket_id;
+    self.next_socket_id += 1;
+    s
   }
 
   fn get_new_port(&mut self) -> Port {
@@ -65,9 +89,12 @@ impl TcpLayer {
           let streams = streams.read().unwrap();
           let stream: Vec<_> = streams
             .iter()
-            .filter(|&s| {
-              let src_port = s.source_port();
-              src_port == dst_port
+            .filter_map(|(_, s)| {
+              if s.source_port() == dst_port {
+                Some(s)
+              } else {
+                None
+              }
             })
             .collect();
           if stream.len() < 1 {
@@ -119,7 +146,7 @@ impl TcpLayer {
 
   pub fn print_sockets(&self) {
     let streams = self.streams.read().unwrap();
-    for (i, stream) in streams.iter().enumerate() {
+    for (i, stream) in streams.iter() {
       println!(
         "Socket {i} - src: {:?}:{}, dst: {:?}, state: {:?}",
         stream.source_ip(),
@@ -132,7 +159,7 @@ impl TcpLayer {
 
   pub fn print_window(&self, socket_id: SocketId) {
     let streams = self.streams.read().unwrap();
-    match streams.get(socket_id) {
+    match streams.get(&socket_id) {
       Some(stream) => println!("Window size: {}", stream.get_window_size()),
       None => eprintln!("Unknown socket_id: {socket_id}"),
     }
@@ -143,23 +170,44 @@ impl TcpLayer {
       eprintln!("Error: port {port} in use");
       return;
     }
-    let stream = TcpStream::listen(port, self.ip_send_tx.clone());
-    self.streams.write().unwrap().push(Arc::new(stream));
+    let new_socket = self.get_new_socket();
+    let stream = TcpStream::listen(
+      port,
+      self.ip_send_tx.clone(),
+      self.make_cleanup_callback(new_socket),
+    );
+    self
+      .streams
+      .write()
+      .unwrap()
+      .insert(new_socket, Arc::new(stream));
     self.used_ports.insert(port);
   }
 
   pub fn connect(&mut self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr, dst_port: Port) {
     let src_port = self.get_new_port();
     let ip_send_tx = self.ip_send_tx.clone();
-    // TODO: pass error back up?
-    let stream = TcpStream::connect(src_ip, src_port, dst_ip, dst_port, ip_send_tx).unwrap();
-    self.streams.write().unwrap().push(Arc::new(stream));
+    let new_socket = self.get_new_socket();
+    let stream = TcpStream::connect(
+      src_ip,
+      src_port,
+      dst_ip,
+      dst_port,
+      ip_send_tx,
+      self.make_cleanup_callback(new_socket),
+    )
+    .unwrap();
+    self
+      .streams
+      .write()
+      .unwrap()
+      .insert(new_socket, Arc::new(stream));
   }
 
   pub fn send(&self, socket_id: SocketId, data: Vec<u8>) -> Result<()> {
     // TODO: check state of stream
     let streams = self.streams.read().unwrap();
-    match streams.get(socket_id) {
+    match streams.get(&socket_id) {
       Some(stream) => {
         stream.send(&data)?;
         Ok(())
@@ -169,17 +217,16 @@ impl TcpLayer {
   }
 
   pub fn recv(&self, socket_id: SocketId, numbytes: usize, should_block: bool) -> Result<Vec<u8>> {
-    // TODO: check state of stream
     let streams = self.streams.read().unwrap();
-    match streams.get(socket_id) {
+    match streams.get(&socket_id) {
       Some(stream) => Ok(stream.recv(numbytes, should_block)?),
       None => Err(anyhow!("Unknown socket_id: {socket_id}")),
     }
   }
 
-  pub fn shutdown(&self, socket_id: SocketId, shutdown_method: SocketSide) {
+  pub fn shutdown(&mut self, socket_id: SocketId, shutdown_method: SocketSide) {
     let streams = self.streams.read().unwrap();
-    let stream = match streams.get(socket_id) {
+    let stream = match streams.get(&socket_id) {
       Some(stream) => stream,
       None => {
         debug!("Unknown socket_id: {socket_id}");
@@ -198,9 +245,10 @@ impl TcpLayer {
     }
   }
 
-  pub fn close(&self, socket_id: SocketId) {
+  /// This is v_close, not CLOSE in RFC
+  pub fn close(&mut self, socket_id: SocketId) {
     let streams = self.streams.read().unwrap();
-    let stream = match streams.get(socket_id) {
+    let stream = match streams.get(&socket_id) {
       Some(stream) => stream,
       None => {
         debug!("Unknown socket_id: {socket_id}");

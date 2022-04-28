@@ -13,20 +13,3 @@ pub struct TcpListener {
   port:       Port,
   ip_send_tx: Sender<IpPacket>,
 }
-
-impl TcpListener {
-  pub fn bind(port: Port, ip_send_tx: Sender<IpPacket>) -> TcpListener {
-    // TODO return a Result<> and don't accept when already bound
-    let stream = Arc::new(TcpStream::listen(port, ip_send_tx.clone()));
-    TcpListener {
-      stream,
-      port,
-      ip_send_tx,
-    }
-  }
-
-  pub fn accept(&self) -> Result<(TcpStream, SocketAddr)> {
-    // TODO still WIP
-    todo!();
-  }
-}
