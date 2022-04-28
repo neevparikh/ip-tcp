@@ -51,7 +51,7 @@ impl RingBuffer {
 
   /// move write head
   pub fn move_write_idx(&mut self, num_bytes: usize) {
-    self.write_idx = (self.write_idx + num_bytes) % self.len();
+    self.write_idx = self.wrapping_add(self.write_idx, num_bytes);
     debug_assert!(self.write_idx <= self.read_idx);
   }
 
