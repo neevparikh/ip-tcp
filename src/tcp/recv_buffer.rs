@@ -36,7 +36,6 @@ pub(super) struct RecvBuffer {
 
 impl WindowData {
   fn get_interval_between(&self, s: u32, e: u32) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
-    dbg!(&self.starts, &self.ends, s, e);
     let l = self.left;
     let r = self.right;
     if s > e {
@@ -49,7 +48,6 @@ impl WindowData {
         .into_iter()
         .chain(self.starts.range(..=e).into_iter())
         .filter_map(|(&st, &en)| {
-          dbg!(st, en);
           if st > en {
             if st < l || en > r {
               None
@@ -274,7 +272,6 @@ impl RecvBuffer {
       (has_l, has_r)
     };
 
-    dbg!(seg_l, seg_r, has_l, has_r, wrap, win.right, win.left);
     // If within interval, add data to buffer and update intervals
     if let Some((interval_l, interval_r)) = if has_l && has_r {
       // entirely in window
@@ -300,7 +297,6 @@ impl RecvBuffer {
       debug!("Dropping packet, outside of window");
       None
     } {
-      dbg!(interval_l, interval_r);
       let wrap = interval_r < interval_l;
       if interval_l == win.left
         || (!wrap && (interval_l..interval_r).contains(&win.left))
@@ -361,7 +357,6 @@ impl RecvBuffer {
       debug_assert_eq!(win.reader.wrapping_add(TCP_BUF_SIZE as u32), win.right);
     }
 
-    dbg!(win.left, win.right);
     bytes_asked_and_available
   }
 }
