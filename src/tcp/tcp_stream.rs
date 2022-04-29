@@ -219,7 +219,7 @@ impl TcpStream {
           break;
         }
 
-        let _ = self.recv_buffer_cond.wait(self.recv_buffer.lock().unwrap());
+        let _ = self.recv_buffer_cond.wait(buf);
       }
 
       let state = self.state();
