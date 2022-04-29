@@ -1,4 +1,5 @@
 use std::any::type_name;
+use std::fs::File;
 use std::io::{stdin, stdout, Write};
 use std::net::Ipv4Addr;
 use std::str::FromStr;
@@ -19,6 +20,14 @@ pub struct Args {
   /// Filename of the lnx file
   #[clap(required = true)]
   lnx_filename: String,
+}
+
+fn send_file(filename: String, dst_ip: Ipv4Addr, port: Port) -> Result<()> {
+  todo!()
+}
+
+fn recv_file(filename: String, port: Port) -> Result<()> {
+  todo!()
 }
 
 fn check_len(tokens: &[String], expected: usize) -> Result<()> {
@@ -170,11 +179,11 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
 
     "send_file" | "sf" => {
       let (filename, ip, port) = parse_send_file_args(tokens)?;
-      tcp_layer.send_file(filename, ip, port);
+      send_file(filename, ip, port)?;
     }
     "recv_file" | "rf" => {
       let (filename, port) = parse_recv_file_args(tokens)?;
-      tcp_layer.recv_file(filename, port);
+      recv_file(filename, port)?;
     }
 
     "quit" | "q" => return Ok(true),
