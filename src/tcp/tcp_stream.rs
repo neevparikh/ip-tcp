@@ -175,7 +175,6 @@ impl TcpStream {
     let mut bytes_read = 0;
     if should_block {
       loop {
-        let _ = self.recv_buffer_cond.wait(self.recv_buffer.lock().unwrap());
         // lock order
         let state = self.state();
         let mut buf = self.recv_buffer.lock().unwrap();
@@ -184,6 +183,12 @@ impl TcpStream {
         if !(bytes_read < num_bytes && VALID_RECV_STATES.contains(&state)) {
           break;
         }
+        // Close wait is a valid recv state, however we know that no more data is coming
+        if state == TcpStreamState::CloseWait {
+          break;
+        }
+
+        let _ = self.recv_buffer_cond.wait(self.recv_buffer.lock().unwrap());
       }
 
       let state = self.state();
@@ -191,6 +196,8 @@ impl TcpStream {
         Err(anyhow!("Error: connection closing"))
       } else if bytes_read == num_bytes {
         Ok(data)
+      } else if state == TcpStreamState::CloseWait {
+        Err(anyhow!("Error: connection closing"))
       } else {
         Err(anyhow!("Error: failure occured during blocking read"))
       }
