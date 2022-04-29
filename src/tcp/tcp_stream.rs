@@ -2,18 +2,19 @@ use std::fmt::Debug;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{thread, vec};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use etherparse::TcpHeader;
 
 use super::recv_buffer::RecvBuffer;
 use super::send_buffer::SendBuffer;
 use super::tcp_internal::TcpStreamInternal;
+use super::tcp_layer::TcpLayerInfo;
 use super::{
-  IpTcpPacket, Port, TcpStreamState, MAX_SEGMENT_LIFETIME, MAX_WINDOW_SIZE, VALID_ACK_STATES,
-  VALID_FIN_STATES, VALID_RECV_STATES, VALID_SEND_STATES,
+  IpTcpPacket, Port, SocketId, TcpStreamState, MAX_SEGMENT_LIFETIME, MAX_WINDOW_SIZE,
+  VALID_ACK_STATES, VALID_FIN_STATES, VALID_RECV_STATES, VALID_SEND_STATES,
 };
 use crate::ip::IpPacket;
 use crate::{debug, edebug};
@@ -78,7 +79,7 @@ impl TcpStream {
 }
 
 impl TcpStream {
-  pub(super) fn new(
+  fn new(
     // TODO, do we need this? source_ip: Ipv4Addr,
     source_ip: Option<Ipv4Addr>,
     source_port: Port,
@@ -91,7 +92,9 @@ impl TcpStream {
     let (stream_tx, stream_rx) = mpsc::channel();
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
 
-    let initial_sequence_number = 0; // TODO: switch to ISN being clock time
+    let initial_sequence_number = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .map_or(0u32, |t| t.as_millis() as u32);
     let internal = Arc::new(Mutex::new(TcpStreamInternal {
       source_ip,
       source_port,
@@ -130,6 +133,34 @@ impl TcpStream {
       recv_buffer_cond,
       send_buffer,
       stream_tx: Arc::new(Mutex::new(stream_tx)),
+    }
+  }
+
+  pub(super) fn spawn_and_queue(
+    info: &TcpLayerInfo,
+    port: Port,
+    state: TcpStreamState,
+    listener_socket: SocketId,
+  ) -> Result<()> {
+    let queues = info.queued_streams.lock().unwrap();
+    match queues.get_mut(&listener_socket) {
+      None => Err(anyhow!("Unknown listener socket {listener_socket}")),
+      Some(queue) => {
+        let mut sockets_and_ports = info.sockets_and_ports.lock().unwrap();
+        let new_socket = sockets_and_ports.get_new_socket();
+        let stream = Arc::new(TcpStream::new(
+          None,
+          port,
+          None,
+          None,
+          state,
+          info.ip_send_tx.clone(),
+          info.make_cleanup_callback(new_socket),
+        ));
+        sockets_and_ports.add_port(port);
+        queue.push_back(stream);
+        Ok(())
+      }
     }
   }
 

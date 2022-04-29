@@ -39,22 +39,7 @@ impl TcpListener {
   fn create_stream(info: &TcpLayerInfo, port: Port, state: TcpStreamState) -> Arc<TcpStream> {
     let mut sockets_and_ports = info.sockets_and_ports.lock().unwrap();
     let new_socket = sockets_and_ports.get_new_socket();
-    let stream = Arc::new(TcpStream::new(
-      None,
-      port,
-      None,
-      None,
-      state,
-      info.ip_send_tx.clone(),
-      info.make_cleanup_callback(new_socket),
-    ));
-
-    info
-      .streams
-      .write()
-      .unwrap()
-      .insert(new_socket, stream.clone());
-    sockets_and_ports.add_port(port);
+    let stream = TcpStream::spawn(info, port, state);
     stream
   }
 }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::Ipv4Addr;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
@@ -14,6 +14,7 @@ use crate::ip::{HandlerFunction, IpPacket};
 use crate::{debug, edebug};
 
 type StreamMap = Arc<RwLock<BTreeMap<SocketId, Arc<TcpStream>>>>;
+type QueuedStreamMap = Arc<Mutex<BTreeMap<SocketId, VecDeque<Arc<TcpStream>>>>>;
 
 const START_PORT: Port = 10000;
 
@@ -60,9 +61,10 @@ impl SocketPortAvailablity {
 
 #[derive(Clone)]
 pub struct TcpLayerInfo {
-  pub(super) socket_port: LockedSocketPort,
-  pub(super) ip_send_tx:  Sender<IpPacket>,
-  pub(super) streams:     StreamMap,
+  pub(super) sockets_and_ports: LockedSocketPort,
+  pub(super) ip_send_tx:        Sender<IpPacket>,
+  pub(super) streams:           StreamMap,
+  pub(super) queued_streams:    QueuedStreamMap,
 }
 
 impl TcpLayerInfo {
@@ -100,9 +102,10 @@ impl TcpLayer {
       ip_send_tx: ip_send_tx.clone(),
       tcp_recv_tx,
       info: TcpLayerInfo {
-        socket_port: Arc::new(Mutex::new(info)),
-        ip_send_tx:  ip_send_tx.clone(),
-        streams:     Arc::new(RwLock::new(BTreeMap::new())),
+        sockets_and_ports: Arc::new(Mutex::new(info)),
+        ip_send_tx:        ip_send_tx.clone(),
+        streams:           Arc::new(RwLock::new(BTreeMap::new())),
+        queued_streams:    Arc::new(Mutex::new(BTreeMap::new())),
       },
     };
     tcp_layer.start_stream_dispatcher(tcp_recv_rx);
@@ -196,9 +199,9 @@ impl TcpLayer {
   }
 
   pub fn connect(&mut self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr, dst_port: Port) {
-    let src_port = self.info.socket_port.lock().unwrap().get_new_port();
+    let src_port = self.info.sockets_and_ports.lock().unwrap().get_new_port();
     let ip_send_tx = self.ip_send_tx.clone();
-    let new_socket = self.info.socket_port.lock().unwrap().get_new_socket();
+    let new_socket = self.info.sockets_and_ports.lock().unwrap().get_new_socket();
     let stream = TcpStream::connect(
       src_ip,
       src_port,
