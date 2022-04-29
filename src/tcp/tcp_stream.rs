@@ -15,7 +15,8 @@ use super::{
   IpTcpPacket, Port, TcpStreamState, MAX_SEGMENT_LIFETIME, MAX_WINDOW_SIZE, VALID_ACK_STATES,
   VALID_FIN_STATES, VALID_RECV_STATES, VALID_SEND_STATES,
 };
-use crate::{debug, edebug, IpPacket};
+use crate::ip::IpPacket;
+use crate::{debug, edebug};
 
 #[derive(Debug)]
 pub(super) enum StreamSendThreadMsg {

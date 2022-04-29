@@ -10,9 +10,10 @@ use anyhow::Result;
 use super::ip_packet::IpPacket;
 use super::protocol::Protocol;
 use super::rip_message::{RipCommand, RipEntry, RipMsg, INFINITY_COST};
-use crate::link::interface::{Interface, State};
+use super::HandlerFunction;
+use crate::link::interface::{Interface, InterfaceId, State};
 use crate::link::link_layer::SharedInterfaces;
-use crate::{debug, edebug, HandlerFunction, InterfaceId};
+use crate::{debug, edebug};
 
 type PartialTable = BTreeMap<Ipv4Addr, RoutingEntry>;
 type InternalTable = Arc<Mutex<PartialTable>>;

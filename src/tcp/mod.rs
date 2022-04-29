@@ -5,11 +5,16 @@ use etherparse::{Ipv4Header, TcpHeader};
 mod recv_buffer;
 mod ring_buffer;
 mod send_buffer;
-pub mod socket;
+mod socket;
 mod tcp_internal;
-pub mod tcp_layer;
-pub mod tcp_listener;
-pub mod tcp_stream;
+mod tcp_layer;
+mod tcp_listener;
+mod tcp_stream;
+
+pub use socket::{SocketId, SocketSide};
+pub use tcp_layer::TcpLayer;
+pub use tcp_listener::TcpListener;
+pub use tcp_stream::TcpStream;
 
 pub type Port = u16;
 pub type TcpPacket = (TcpHeader, Vec<u8>);

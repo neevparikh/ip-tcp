@@ -6,12 +6,9 @@ use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use ip_tcp::ip::ip_layer::IpLayer;
-use ip_tcp::ip::protocol::Protocol;
+use ip_tcp::ip::{IpLayer, Protocol};
 use ip_tcp::misc::lnx_config::LnxConfig;
-use ip_tcp::tcp::socket::{SocketId, SocketSide};
-use ip_tcp::tcp::tcp_layer::TcpLayer;
-use ip_tcp::tcp::Port;
+use ip_tcp::tcp::{SocketId, SocketSide, TcpLayer, TcpStream, TcpListener, Port};
 use shellwords;
 
 #[derive(Parser, Debug)]
@@ -149,7 +146,9 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
     "sockets" | "ls" => tcp_layer.print_sockets(),
     "window" | "lw" => tcp_layer.print_window(parse_num(tokens)?),
 
-    "accept" | "a" => tcp_layer.accept(parse_num(tokens)?),
+    "accept" | "a" => {
+      tcp_layer.accept(parse_num(tokens)?),
+    }
     "connect" | "c" => {
       let (dst_ip, port) = parse_tcp_address(tokens)?;
       match ip_layer.get_src_from_dst(dst_ip) {

@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
-use super::interface::{Interface, State};
+use super::interface::{Interface, InterfaceId, State};
+use crate::debug;
 use crate::misc::lnx_config::LnxConfig;
-use crate::{debug, InterfaceId};
 
 const MAX_SIZE: usize = 65536;
 

@@ -7,8 +7,7 @@ use etherparse::{Ipv4Header, TcpHeader};
 use super::{
   Port, TcpStreamState, VALID_ACK_STATES, VALID_FIN_STATES, VALID_SEND_STATES, VALID_SYN_STATES,
 };
-use crate::ip::protocol::Protocol;
-use crate::IpPacket;
+use crate::ip::{IpPacket, Protocol};
 
 pub struct TcpStreamInternal {
   pub source_ip:               Option<Ipv4Addr>,

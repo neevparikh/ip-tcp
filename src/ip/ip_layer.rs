@@ -12,10 +12,11 @@ use super::forwarding_table::ForwardingTable;
 use super::ip_packet::IpPacket;
 use super::protocol::Protocol;
 use super::rip_message::INFINITY_COST;
-use crate::link::interface::State;
-use crate::link::link_layer::LinkLayer;
+use super::HandlerFunction;
+use crate::link::interface::{InterfaceId, State};
+use crate::link::link_layer::{LinkLayer, LinkRecvMsg, LinkSendMsg};
 use crate::misc::lnx_config::LnxConfig;
-use crate::{debug, edebug, HandlerFunction, InterfaceId, LinkRecvMsg, LinkSendMsg};
+use crate::{debug, edebug};
 
 type HandlerMap = HashMap<Protocol, HandlerFunction>;
 

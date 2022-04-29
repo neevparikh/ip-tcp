@@ -3,10 +3,9 @@ use std::net::Ipv4Addr;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use ip_tcp::ip::ip_layer::IpLayer;
-use ip_tcp::ip::protocol::Protocol;
+use ip_tcp::ip::{IpLayer, Protocol};
+use ip_tcp::link::InterfaceId;
 use ip_tcp::misc::lnx_config::LnxConfig;
-use ip_tcp::InterfaceId;
 use shellwords;
 
 #[derive(Parser, Debug)]

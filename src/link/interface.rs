@@ -3,8 +3,7 @@ use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
 
 use anyhow::{anyhow, Error, Result};
-
-use crate::InterfaceId;
+pub type InterfaceId = usize;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum State {

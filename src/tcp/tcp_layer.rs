@@ -10,7 +10,8 @@ use etherparse::{Ipv4Header, TcpHeader};
 use super::socket::{SocketId, SocketSide};
 use super::tcp_stream::TcpStream;
 use super::{IpTcpPacket, Port};
-use crate::{debug, edebug, HandlerFunction, IpPacket};
+use crate::ip::{HandlerFunction, IpPacket};
+use crate::{debug, edebug};
 
 type StreamMap = Arc<RwLock<BTreeMap<SocketId, Arc<TcpStream>>>>;
 
