@@ -16,7 +16,7 @@ const RTO_LBOUND: Duration = Duration::from_millis(1);
 const RTO_UBOUND: Duration = Duration::from_secs(60);
 const RTO_BETA: f32 = 2f32;
 const SRTT_ALPHA: f32 = 0.8f32;
-const INITIAL_SRTT: Duration = Duration::from_millis(1500);
+const INITIAL_SRTT: Duration = Duration::from_millis(200);
 const ZERO_WINDOW_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, PartialEq)]
@@ -306,7 +306,7 @@ impl SendBuffer {
       }
 
       match wake_timeout_thread_rx.recv() {
-        Ok(()) => (), //debug!("timeout thread woken"),
+        Ok(()) => (), // debug!("timeout thread woken"),
         Err(_) => {
           edebug!("timeout thread died");
           break;

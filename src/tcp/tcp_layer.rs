@@ -47,11 +47,8 @@ impl TcpLayer {
   fn make_cleanup_callback(&self, socket_id: SocketId) -> Box<dyn Fn() + Send> {
     let stream_map = self.streams.clone();
     Box::new(move || {
-      debug!("Waiting on stream map lock");
       let mut sm = stream_map.write().unwrap();
-      debug!("Got stream map lock");
       sm.remove(&socket_id);
-      debug!("Removed");
     })
   }
 
@@ -259,13 +256,5 @@ impl TcpLayer {
     if let Err(e) = stream.close() {
       debug!("Error: {e}")
     }
-  }
-
-  pub fn send_file(&self, filename: String, ip: Ipv4Addr, port: Port) {
-    todo!()
-  }
-
-  pub fn recv_file(&self, filename: String, port: Port) {
-    todo!()
   }
 }

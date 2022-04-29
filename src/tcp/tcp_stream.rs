@@ -32,6 +32,15 @@ const VALID_FIN_STATES: [TcpStreamState; 6] = [
 ];
 const VALID_SEND_STATES: [TcpStreamState; 2] =
   [TcpStreamState::Established, TcpStreamState::CloseWait];
+const VALID_RECV_STATES: [TcpStreamState; 7] = [
+  TcpStreamState::Listen,
+  TcpStreamState::SynSent,
+  TcpStreamState::SynReceived,
+  TcpStreamState::Established,
+  TcpStreamState::FinWait1,
+  TcpStreamState::FinWait2,
+  TcpStreamState::CloseWait,
+];
 const VALID_ACK_STATES: [TcpStreamState; 5] = [
   TcpStreamState::SynSent,
   TcpStreamState::FinWait1,
@@ -239,25 +248,29 @@ impl TcpStream {
   }
 
   /// Called by TcpLayer
-  /// TODO: tell recv_buffer_cond on close
   pub fn recv(&self, num_bytes: usize, should_block: bool) -> Result<Vec<u8>> {
     let mut data = vec![0u8; num_bytes];
     let mut bytes_read = 0;
     if should_block {
-      let buf = self.recv_buffer.lock().unwrap();
-      let _ = self
-        .recv_buffer_cond
-        .wait_while(buf, |buf| {
-          let n = buf.read_data(&mut data[bytes_read..]);
-          bytes_read += n;
-          bytes_read < num_bytes
-        })
-        .unwrap();
+      loop {
+        let _ = self.recv_buffer_cond.wait(self.recv_buffer.lock().unwrap());
+        // lock order
+        let state = self.state();
+        let mut buf = self.recv_buffer.lock().unwrap();
+        let n = buf.read_data(&mut data[bytes_read..]);
+        bytes_read += n;
+        if !(bytes_read < num_bytes && VALID_RECV_STATES.contains(&state)) {
+          break;
+        }
+      }
 
-      if bytes_read == num_bytes {
+      let state = self.state();
+      if !VALID_RECV_STATES.contains(&state) {
+        Err(anyhow!("Error: connection closing"))
+      } else if bytes_read == num_bytes {
         Ok(data)
       } else {
-        Err(anyhow!("Error occured during blocking read"))
+        Err(anyhow!("Error: failure occured during blocking read"))
       }
     } else {
       let mut buf = self.recv_buffer.lock().unwrap();
@@ -588,6 +601,7 @@ impl TcpStream {
                   }
                   stream.state = TcpStreamState::TimeWait;
                   timewait_timeout = Some(Instant::now() + MAX_SEGMENT_LIFETIME);
+                  recv_buffer_cond.notify_all();
                 }
                 if let Err(e) = handle_incoming_ack_data(&tcp_header, data, &mut stream) {
                   edebug!("{}", e);
@@ -627,6 +641,7 @@ impl TcpStream {
                     handle_ack_of_fin(&tcp_header, &*send_buffer);
                     stream.state = TcpStreamState::TimeWait;
                     timewait_timeout = Some(Instant::now() + MAX_SEGMENT_LIFETIME);
+                    recv_buffer_cond.notify_all();
                   }
                 }
               }
@@ -653,7 +668,7 @@ impl TcpStream {
             }
           }
           Err(RecvTimeoutError::Timeout) => {
-            let stream = stream.lock().unwrap();
+            let mut stream = stream.lock().unwrap();
             if stream.state == TcpStreamState::Closed {
               debug!("State is CLOSED, closing...");
               break;
@@ -661,6 +676,7 @@ impl TcpStream {
             if let Some(timeout) = timewait_timeout {
               if Instant::now() > timeout {
                 debug!("MSL timed out, state is now CLOSED, closing...");
+                stream.state = TcpStreamState::Closed;
                 break;
               }
             }
@@ -673,9 +689,9 @@ impl TcpStream {
           }
         }
       }
-      debug!("Cleanup called, exiting...");
+
+      recv_buffer_cond.notify_all();
       cleanup();
-      debug!("BYE");
     });
   }
 
