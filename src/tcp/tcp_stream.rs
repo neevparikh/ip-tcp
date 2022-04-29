@@ -48,7 +48,7 @@ pub struct TcpStream {
 }
 
 impl TcpStream {
-  fn new(
+  pub(super) fn new(
     // TODO, do we need this? source_ip: Ipv4Addr,
     source_ip: Option<Ipv4Addr>,
     source_port: Port,
@@ -101,22 +101,6 @@ impl TcpStream {
       send_buffer,
       stream_tx: Arc::new(Mutex::new(stream_tx)),
     }
-  }
-
-  pub fn listen(
-    source_port: Port,
-    ip_send_tx: Sender<IpPacket>,
-    cleanup: Box<dyn Fn() + Send>,
-  ) -> TcpStream {
-    TcpStream::new(
-      None,
-      source_port,
-      None,
-      None,
-      TcpStreamState::Listen,
-      ip_send_tx,
-      cleanup,
-    )
   }
 
   pub fn connect(
