@@ -13,7 +13,7 @@ use super::{IpTcpPacket, Port};
 use crate::ip::{HandlerFunction, IpPacket};
 use crate::{debug, edebug};
 
-type StreamMap = Arc<RwLock<BTreeMap<SocketId, Arc<TcpStream>>>>;
+type StreamMap = Arc<RwLock<BTreeMap<SocketId, TcpStream>>>;
 
 const START_PORT: Port = 10000;
 
@@ -58,12 +58,7 @@ impl SocketPortAvailablity {
   }
 }
 
-#[derive(Debug)]
-pub enum LayerStreamMsg {
-  /// Clean up stream
-  Closed(SocketId),
-}
-
+#[derive(Clone)]
 pub struct TcpLayerInfo {
   pub(super) socket_port: LockedSocketPort,
   pub(super) ip_send_tx:  Sender<IpPacket>,
@@ -84,6 +79,12 @@ pub struct TcpLayer {
   ip_send_tx:  Sender<IpPacket>,
   tcp_recv_tx: Sender<IpTcpPacket>,
   info:        TcpLayerInfo,
+}
+
+impl TcpLayer {
+  pub fn get_info(&self) -> TcpLayerInfo {
+    self.info.clone()
+  }
 }
 
 impl TcpLayer {
@@ -212,7 +213,7 @@ impl TcpLayer {
       .streams
       .write()
       .unwrap()
-      .insert(new_socket, Arc::new(stream));
+      .insert(new_socket, stream);
   }
 
   pub fn send(&self, socket_id: SocketId, data: Vec<u8>) -> Result<()> {

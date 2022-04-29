@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use ip_tcp::ip::{IpLayer, Protocol};
 use ip_tcp::misc::lnx_config::LnxConfig;
-use ip_tcp::tcp::{SocketId, SocketSide, TcpLayer, TcpStream, TcpListener, Port};
+use ip_tcp::tcp::{Port, SocketId, SocketSide, TcpLayer, TcpListener, TcpStream};
 use shellwords;
 
 #[derive(Parser, Debug)]
@@ -147,7 +147,8 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
     "window" | "lw" => tcp_layer.print_window(parse_num(tokens)?),
 
     "accept" | "a" => {
-      tcp_layer.accept(parse_num(tokens)?),
+      let mut listener = TcpListener::bind(parse_num(tokens)?, tcp_layer.get_info())?;
+      let stream = listener.accept();
     }
     "connect" | "c" => {
       let (dst_ip, port) = parse_tcp_address(tokens)?;

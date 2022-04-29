@@ -35,6 +35,7 @@ pub(super) enum StreamSendThreadMsg {
   Shutdown,
 }
 
+#[derive(Clone)]
 pub struct TcpStream {
   internal: Arc<Mutex<TcpStreamInternal>>,
 
@@ -46,6 +47,34 @@ pub struct TcpStream {
   /// TODO: how should commands like SHUTDOWN and CLOSE be passed
   /// Selecting???
   stream_tx: Arc<Mutex<Sender<IpTcpPacket>>>, // thing for others to send this stream a packet
+}
+
+impl TcpStream {
+  pub fn destination(&self) -> Option<SocketAddr> {
+    self.internal.lock().unwrap().destination()
+  }
+
+  pub fn source_ip(&self) -> Option<Ipv4Addr> {
+    self.internal.lock().unwrap().source_ip()
+  }
+
+  pub fn source_port(&self) -> Port {
+    self.internal.lock().unwrap().source_port()
+  }
+
+  /// get stream state
+  pub fn state(&self) -> TcpStreamState {
+    self.internal.lock().unwrap().state()
+  }
+
+  fn set_state(&mut self, state: TcpStreamState) {
+    self.internal.lock().unwrap().state = state;
+  }
+
+  /// get window size
+  pub fn get_window_size(&self) -> u16 {
+    self.recv_buffer.lock().unwrap().get_window_size()
+  }
 }
 
 impl TcpStream {
@@ -125,28 +154,6 @@ impl TcpStream {
     new_stream.send_buffer.send_syn()?;
 
     Ok(new_stream)
-  }
-
-  pub fn destination(&self) -> Option<SocketAddr> {
-    self.internal.lock().unwrap().destination()
-  }
-
-  pub fn source_ip(&self) -> Option<Ipv4Addr> {
-    self.internal.lock().unwrap().source_ip()
-  }
-
-  pub fn source_port(&self) -> Port {
-    self.internal.lock().unwrap().source_port()
-  }
-
-  /// get stream state
-  pub fn state(&self) -> TcpStreamState {
-    self.internal.lock().unwrap().state()
-  }
-
-  /// get window size
-  pub fn get_window_size(&self) -> u16 {
-    self.recv_buffer.lock().unwrap().get_window_size()
   }
 
   /// Called by TcpLayer when it receives a packet for this stream, sends to listen thread to
@@ -243,7 +250,9 @@ impl TcpStream {
       TcpStreamState::Closed => Err(anyhow!("connection closing")),
     }
   }
+}
 
+impl TcpStream {
   /// Handles sending packets from send buffer (to send data out) and handles sending acks for
   /// recieved data from recv buffer.
   fn start_send_thread(
@@ -608,10 +617,6 @@ impl TcpStream {
       recv_buffer_cond.notify_all();
       cleanup();
     });
-  }
-
-  fn set_state(&mut self, state: TcpStreamState) {
-    self.internal.lock().unwrap().state = state;
   }
 }
 
