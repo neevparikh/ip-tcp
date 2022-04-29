@@ -5,15 +5,14 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{thread, vec};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Result};
 use etherparse::TcpHeader;
 
 use super::recv_buffer::RecvBuffer;
 use super::send_buffer::SendBuffer;
 use super::tcp_internal::TcpStreamInternal;
-use super::tcp_layer::TcpLayerInfo;
 use super::{
-  IpTcpPacket, Port, SocketId, TcpStreamState, MAX_SEGMENT_LIFETIME, MAX_WINDOW_SIZE,
+  IpTcpPacket, Port, SocketId, TcpLayerInfo, TcpStreamState, MAX_SEGMENT_LIFETIME, MAX_WINDOW_SIZE,
   VALID_ACK_STATES, VALID_FIN_STATES, VALID_RECV_STATES, VALID_SEND_STATES,
 };
 use crate::ip::IpPacket;
@@ -164,27 +163,35 @@ impl TcpStream {
     }
   }
 
-  pub fn connect(
-    source_ip: Ipv4Addr,
-    source_port: Port,
-    destination_ip: Ipv4Addr,
-    destination_port: Port,
-    ip_send_tx: Sender<IpPacket>,
-    cleanup: Box<dyn Fn() + Send>,
-  ) -> Result<TcpStream> {
-    let new_stream = TcpStream::new(
-      Some(source_ip),
-      source_port,
-      Some(destination_ip),
-      Some(destination_port),
+  pub fn connect(info: TcpLayerInfo, dst_ip: Ipv4Addr, dst_port: Port) -> Result<Arc<TcpStream>> {
+    let mut sockets_and_ports = info.sockets_and_ports.lock().unwrap();
+    let src_port = sockets_and_ports.get_new_port();
+    let ip_send_tx = info.ip_send_tx.clone();
+    let new_socket = sockets_and_ports.get_new_socket();
+    let src_ip = info.get_our_ip_addrs().iter().next().cloned();
+    if src_ip.is_none() {
+      panic!("No ip addresses!");
+    }
+    let stream = TcpStream::new(
+      src_ip,
+      src_port,
+      Some(dst_ip),
+      Some(dst_port),
       TcpStreamState::SynSent,
       ip_send_tx,
-      cleanup,
+      info.make_cleanup_callback(new_socket),
     );
 
-    new_stream.send_buffer.send_syn()?;
+    let stream = Arc::new(stream);
+    info
+      .streams
+      .write()
+      .unwrap()
+      .insert(new_socket, stream.clone());
 
-    Ok(new_stream)
+    stream.send_buffer.send_syn()?;
+
+    Ok(stream)
   }
 
   /// Called by TcpLayer when it receives a packet for this stream, sends to listen thread to
@@ -328,6 +335,7 @@ impl TcpStream {
           let mut stream = stream.lock().unwrap();
           if VALID_SEND_STATES.contains(&stream.state) {
             if seq_num >= stream.next_seq {
+              debug_assert_eq!(stream.next_seq, seq_num);
               stream.next_seq = seq_num + data.len() as u32;
             }
             if let Err(_e) = stream.send_data(seq_num, data) {
@@ -352,9 +360,11 @@ impl TcpStream {
           stream.last_window_size = window_size;
         }
         Ok(StreamSendThreadMsg::Fin(seq_num)) => {
+          debug!("Sending Fin");
           let mut stream = stream.lock().unwrap();
           if VALID_FIN_STATES.contains(&stream.state) {
             if seq_num >= stream.next_seq {
+              debug_assert_eq!(stream.next_seq, seq_num);
               stream.next_seq = seq_num + 1;
             }
             if let Err(_e) = stream.send_fin(seq_num) {

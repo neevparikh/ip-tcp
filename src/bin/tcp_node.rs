@@ -1,6 +1,6 @@
 use std::any::type_name;
 use std::fs::File;
-use std::io::{stdin, stdout, Write};
+use std::io::{stdin, stdout, BufReader, Read, Write};
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 
@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use ip_tcp::ip::{IpLayer, Protocol};
 use ip_tcp::misc::lnx_config::LnxConfig;
-use ip_tcp::tcp::{Port, SocketId, SocketSide, TcpLayer, TcpListener, TcpStream};
+use ip_tcp::tcp::{Port, SocketId, SocketSide, TcpLayer, TcpLayerInfo, TcpListener, TcpStream};
 use shellwords;
 
 #[derive(Parser, Debug)]
@@ -19,8 +19,22 @@ pub struct Args {
   lnx_filename: String,
 }
 
-fn send_file(filename: String, dst_ip: Ipv4Addr, port: Port) -> Result<()> {
-  todo!()
+fn send_file(info: TcpLayerInfo, filename: String, dst_ip: Ipv4Addr, port: Port) -> Result<()> {
+  let mut f = File::open(filename)?;
+  let mut buf = [0u8; 2usize.pow(14)];
+
+  let stream = TcpStream::connect(info, dst_ip, port)?;
+
+  loop {
+    let n = f.read(&mut buf)?;
+    if n == 0 {
+      println!("Sending file finished");
+      break;
+    }
+    stream.send(&buf[0..n]).unwrap();
+  }
+  stream.close()?;
+  Ok(())
 }
 
 fn recv_file(filename: String, port: Port) -> Result<()> {
@@ -153,7 +167,9 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
     "connect" | "c" => {
       let (dst_ip, port) = parse_tcp_address(tokens)?;
       match ip_layer.get_src_from_dst(dst_ip) {
-        Some(src_ip) => tcp_layer.connect(src_ip, dst_ip, port),
+        Some(src_ip) => {
+          TcpStream::connect(tcp_layer.get_info(), dst_ip, port)?;
+        }
         None => eprintln!("Destination ip was not reachable"),
       }
     }
@@ -179,7 +195,7 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
 
     "send_file" | "sf" => {
       let (filename, ip, port) = parse_send_file_args(tokens)?;
-      send_file(filename, ip, port)?;
+      send_file(tcp_layer.get_info(), filename, ip, port)?;
     }
     "recv_file" | "rf" => {
       let (filename, port) = parse_recv_file_args(tokens)?;
@@ -230,7 +246,7 @@ fn main() -> Result<()> {
   let args = Args::parse();
   let config = LnxConfig::new(&args.lnx_filename)?;
   let mut ip_layer = IpLayer::new(config);
-  let tcp_layer = TcpLayer::new(ip_layer.get_ip_send_tx());
+  let tcp_layer = TcpLayer::new(ip_layer.get_ip_send_tx(), ip_layer.get_our_ip_addrs());
   ip_layer.register_handler(Protocol::TCP, tcp_layer.get_tcp_handler());
   run(ip_layer, tcp_layer).map_err(|e| {
     eprintln!("Fatal error: {e}");

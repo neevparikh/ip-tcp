@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::net::Ipv4Addr;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
@@ -65,6 +65,7 @@ pub struct TcpLayerInfo {
   pub(super) ip_send_tx:        Sender<IpPacket>,
   pub(super) streams:           StreamMap,
   pub(super) queued_streams:    QueuedStreamMap,
+  pub(super) our_ip_addrs:      HashSet<Ipv4Addr>,
 }
 
 impl TcpLayerInfo {
@@ -74,6 +75,10 @@ impl TcpLayerInfo {
       let mut sm = stream_map.write().unwrap();
       sm.remove(&socket_id);
     })
+  }
+
+  pub fn get_our_ip_addrs(&self) -> HashSet<Ipv4Addr> {
+    self.our_ip_addrs.clone()
   }
 }
 
@@ -90,7 +95,7 @@ impl TcpLayer {
 }
 
 impl TcpLayer {
-  pub fn new(ip_send_tx: Sender<IpPacket>) -> TcpLayer {
+  pub fn new(ip_send_tx: Sender<IpPacket>, our_ip_addrs: HashSet<Ipv4Addr>) -> TcpLayer {
     let (tcp_recv_tx, tcp_recv_rx) = channel();
 
     let info = SocketPortAvailablity {
@@ -103,9 +108,10 @@ impl TcpLayer {
       tcp_recv_tx,
       info: TcpLayerInfo {
         sockets_and_ports: Arc::new(Mutex::new(info)),
-        ip_send_tx:        ip_send_tx.clone(),
-        streams:           Arc::new(RwLock::new(BTreeMap::new())),
-        queued_streams:    Arc::new(Mutex::new(BTreeMap::new())),
+        ip_send_tx: ip_send_tx.clone(),
+        streams: Arc::new(RwLock::new(BTreeMap::new())),
+        queued_streams: Arc::new(Mutex::new(BTreeMap::new())),
+        our_ip_addrs,
       },
     };
     tcp_layer.start_stream_dispatcher(tcp_recv_rx);
@@ -196,27 +202,6 @@ impl TcpLayer {
       Some(stream) => println!("Window size: {}", stream.get_window_size()),
       None => eprintln!("Unknown socket_id: {socket_id}"),
     }
-  }
-
-  pub fn connect(&mut self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr, dst_port: Port) {
-    let src_port = self.info.sockets_and_ports.lock().unwrap().get_new_port();
-    let ip_send_tx = self.ip_send_tx.clone();
-    let new_socket = self.info.sockets_and_ports.lock().unwrap().get_new_socket();
-    let stream = TcpStream::connect(
-      src_ip,
-      src_port,
-      dst_ip,
-      dst_port,
-      ip_send_tx,
-      self.info.make_cleanup_callback(new_socket),
-    )
-    .unwrap();
-    self
-      .info
-      .streams
-      .write()
-      .unwrap()
-      .insert(new_socket, Arc::new(stream));
   }
 
   pub fn send(&self, socket_id: SocketId, data: Vec<u8>) -> Result<()> {

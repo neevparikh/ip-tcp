@@ -21,12 +21,13 @@ use crate::{debug, edebug};
 type HandlerMap = HashMap<Protocol, HandlerFunction>;
 
 pub struct IpLayer {
-  handlers:    Arc<Mutex<HandlerMap>>,
-  link_layer:  Arc<RwLock<LinkLayer>>,
-  closed:      Arc<AtomicBool>,
-  send_handle: Option<thread::JoinHandle<()>>,
-  ip_send_tx:  Sender<IpPacket>,
-  table:       Arc<ForwardingTable>,
+  handlers:     Arc<Mutex<HandlerMap>>,
+  link_layer:   Arc<RwLock<LinkLayer>>,
+  closed:       Arc<AtomicBool>,
+  send_handle:  Option<thread::JoinHandle<()>>,
+  ip_send_tx:   Sender<IpPacket>,
+  table:        Arc<ForwardingTable>,
+  our_ip_addrs: HashSet<Ipv4Addr>,
 }
 
 impl IpLayer {
@@ -52,6 +53,7 @@ impl IpLayer {
       send_handle: None,
       table,
       ip_send_tx,
+      our_ip_addrs: our_ip_addrs.clone(),
     };
 
     node.register_handler(Protocol::RIP, rip_handler);
@@ -75,6 +77,10 @@ impl IpLayer {
   /// Returns a channel which can be used by other protocols to pass messages down to the IP level
   pub fn get_ip_send_tx(&self) -> Sender<IpPacket> {
     self.ip_send_tx.clone()
+  }
+
+  pub fn get_our_ip_addrs(&self) -> HashSet<Ipv4Addr> {
+    self.our_ip_addrs.clone()
   }
 
   fn close(&mut self) {
