@@ -7,20 +7,23 @@ use super::tcp_stream::TcpStream;
 use super::{Port, TcpStreamState};
 
 pub struct TcpListener {
-  port: Port,
-  info: TcpLayerInfo,
+  port:   Port,
+  info:   TcpLayerInfo,
+  stream: Arc<TcpStream>,
 }
 
 impl TcpListener {
-  pub fn bind(source_port: Port, info: TcpLayerInfo) -> Result<TcpListener> {
-    let socket_port = info.socket_port.lock().unwrap();
-    if socket_port.contains_port(source_port) {
-      Err(anyhow!("Error: port {source_port} in use"))
+  pub fn bind(src_port: Port, info: TcpLayerInfo) -> Result<TcpListener> {
+    let sockets_and_ports = info.sockets_and_ports.lock().unwrap();
+    if sockets_and_ports.contains_port(src_port) {
+      Err(anyhow!("Error: port {src_port} in use"))
     } else {
-      drop(socket_port);
+      let stream = TcpListener::create_stream(&info, src_port, TcpStreamState::Listen);
+      drop(sockets_and_ports);
       Ok(TcpListener {
-        port: source_port,
+        port: src_port,
         info,
+        stream,
       })
     }
   }
@@ -29,26 +32,29 @@ impl TcpListener {
     self.spawn()
   }
 
-  fn spawn(&self) -> Arc<TcpStream> {
-    let mut socket_port = self.info.socket_port.lock().unwrap();
-    let new_socket = socket_port.get_new_socket();
+  fn spawn(&mut self) -> Arc<TcpStream> {
+    TcpListener::create_stream(&self.info, self.port, TcpStreamState::SynReceived)
+  }
+
+  fn create_stream(info: &TcpLayerInfo, port: Port, state: TcpStreamState) -> Arc<TcpStream> {
+    let mut sockets_and_ports = info.sockets_and_ports.lock().unwrap();
+    let new_socket = sockets_and_ports.get_new_socket();
     let stream = Arc::new(TcpStream::new(
       None,
-      self.port,
+      port,
       None,
       None,
-      TcpStreamState::Listen,
-      self.info.ip_send_tx.clone(),
-      self.info.make_cleanup_callback(new_socket),
+      state,
+      info.ip_send_tx.clone(),
+      info.make_cleanup_callback(new_socket),
     ));
 
-    self
-      .info
+    info
       .streams
       .write()
       .unwrap()
       .insert(new_socket, stream.clone());
-    socket_port.add_port(self.port);
+    sockets_and_ports.add_port(port);
     stream
   }
 }
