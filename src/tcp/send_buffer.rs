@@ -16,7 +16,7 @@ const RTO_LBOUND: Duration = Duration::from_millis(1);
 const RTO_UBOUND: Duration = Duration::from_secs(60);
 const RTO_BETA: f32 = 2f32;
 const SRTT_ALPHA: f32 = 0.8f32;
-const INITIAL_SRTT: Duration = Duration::from_millis(200);
+const INITIAL_SRTT: Duration = Duration::from_millis(1500);
 const ZERO_WINDOW_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, PartialEq)]
@@ -130,6 +130,7 @@ impl SendBuffer {
         let mut window = self.window.write().unwrap();
         window.handle_ack_of_syn(window_size);
         *state = SendBufferState::Ready;
+        self.state_pair.1.notify_all();
         Ok(())
       }
       _ => Err(anyhow!("Unexpected ack of syn")),
@@ -142,6 +143,7 @@ impl SendBuffer {
       SendBufferState::FinSent => {
         let mut window = self.window.write().unwrap();
         window.handle_ack_of_fin();
+        self.state_pair.1.notify_all();
       }
       _ => edebug!("Unexpected ack of syn"),
     }
@@ -202,6 +204,7 @@ impl SendBuffer {
       SendBufferState::Init => {
         self.window.write().unwrap().send_syn();
         *state = SendBufferState::SynSent;
+        self.state_pair.1.notify_all();
         self.wake_send_thread()?;
         Ok(())
       }
@@ -237,6 +240,7 @@ impl SendBuffer {
         let mut window = self.window.write().unwrap();
         window.send_fin();
         *state = SendBufferState::FinSent;
+        self.state_pair.1.notify_all();
         self.wake_send_thread()?;
         Ok(())
       }
