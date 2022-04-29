@@ -25,14 +25,14 @@ impl TcpListener {
     }
   }
 
-  pub fn accept(&mut self) -> TcpStream {
+  pub fn accept(&mut self) -> Arc<TcpStream> {
     self.spawn()
   }
 
-  fn spawn(&self) -> TcpStream {
+  fn spawn(&self) -> Arc<TcpStream> {
     let mut socket_port = self.info.socket_port.lock().unwrap();
     let new_socket = socket_port.get_new_socket();
-    let stream = TcpStream::new(
+    let stream = Arc::new(TcpStream::new(
       None,
       self.port,
       None,
@@ -40,7 +40,7 @@ impl TcpListener {
       TcpStreamState::Listen,
       self.info.ip_send_tx.clone(),
       self.info.make_cleanup_callback(new_socket),
-    );
+    ));
 
     self
       .info

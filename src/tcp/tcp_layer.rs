@@ -13,7 +13,7 @@ use super::{IpTcpPacket, Port};
 use crate::ip::{HandlerFunction, IpPacket};
 use crate::{debug, edebug};
 
-type StreamMap = Arc<RwLock<BTreeMap<SocketId, TcpStream>>>;
+type StreamMap = Arc<RwLock<BTreeMap<SocketId, Arc<TcpStream>>>>;
 
 const START_PORT: Port = 10000;
 
@@ -213,7 +213,7 @@ impl TcpLayer {
       .streams
       .write()
       .unwrap()
-      .insert(new_socket, stream);
+      .insert(new_socket, Arc::new(stream));
   }
 
   pub fn send(&self, socket_id: SocketId, data: Vec<u8>) -> Result<()> {
