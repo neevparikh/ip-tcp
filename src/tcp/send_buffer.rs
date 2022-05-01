@@ -1,5 +1,5 @@
 use std::collections::{vec_deque, VecDeque};
-use std::sync::mpsc::{self, Receiver, SendError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SendError, Sender};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,6 +18,7 @@ const RTO_BETA: f32 = 2f32;
 const SRTT_ALPHA: f32 = 0.8f32;
 const INITIAL_SRTT: Duration = Duration::from_millis(1500);
 const ZERO_WINDOW_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const MAX_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, PartialEq)]
 enum WindowElementType {
@@ -287,7 +288,6 @@ impl SendBuffer {
     let window = self.window.clone();
     thread::spawn(move || loop {
       let window = window.read().unwrap();
-
       // clear out dup wakeups so that we don't wake up a bunch of extra times
       while let Ok(()) = wake_timeout_thread_rx.try_recv() {}
 
@@ -298,41 +298,36 @@ impl SendBuffer {
           item
         }
       });
-      let time_to_retry = if let Some(elem) = most_urgent_elem {
-        Some(elem.time_to_retry)
-      } else {
-        None
-      };
-
       let now = Instant::now();
-      let zero_window_probing = window.zero_window_probing;
-      drop(window);
-      if let Some(mut time_to_retry) = time_to_retry {
-        if zero_window_probing {
-          time_to_retry = time_to_retry.min(now + ZERO_WINDOW_PROBE_TIMEOUT);
-        }
-
-        if time_to_retry > now {
-          thread::sleep(time_to_retry.duration_since(now));
-        }
-
-        if wake_send_thread_tx.send(()).is_err() {
-          edebug!("timeout thread died");
-          break;
-        }
-      } else {
-        if zero_window_probing {
-          thread::sleep(ZERO_WINDOW_PROBE_TIMEOUT);
+      let mut retry_timeout = if let Some(elem) = most_urgent_elem {
+        let time_to_retry = elem.time_to_retry;
+        if time_to_retry < now {
           if wake_send_thread_tx.send(()).is_err() {
             edebug!("timeout thread died");
             break;
           }
+          Duration::ZERO
+        } else {
+          time_to_retry.duration_since(now)
         }
+      } else {
+        MAX_RETRY_TIMEOUT
+      };
+      if window.zero_window_probing {
+        if wake_send_thread_tx.send(()).is_err() {
+          edebug!("timeout thread died");
+          break;
+        }
+        // ingore first wakeup during zero_window_probing
+        let _ = wake_timeout_thread_rx.try_recv();
+        retry_timeout = ZERO_WINDOW_PROBE_TIMEOUT;
       }
+      drop(window);
 
-      match wake_timeout_thread_rx.recv() {
+      match wake_timeout_thread_rx.recv_timeout(retry_timeout) {
         Ok(()) => debug!("timeout thread woken"),
-        Err(_) => {
+        Err(RecvTimeoutError::Timeout) => debug!("timeout thread timeout"),
+        Err(RecvTimeoutError::Disconnected) => {
           edebug!("timeout thread died");
           break;
         }
