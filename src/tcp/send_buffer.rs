@@ -12,11 +12,11 @@ use crate::{debug, edebug};
 
 /// Note: in a weird implementation quirk Syn and Fin messages are retried 1 fewer times
 const MAX_RETRIES: u8 = 4;
-const RTO_LBOUND: Duration = Duration::from_millis(1);
+const RTO_LBOUND: Duration = Duration::from_millis(20);
 const RTO_UBOUND: Duration = Duration::from_secs(60);
 const RTO_BETA: f32 = 2f32;
 const SRTT_ALPHA: f32 = 0.8f32;
-const INITIAL_SRTT: Duration = Duration::from_millis(200);
+const INITIAL_SRTT: Duration = Duration::from_millis(1500);
 const ZERO_WINDOW_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, PartialEq)]
@@ -99,7 +99,7 @@ impl SendBuffer {
     let first_seq = initial_sequence_number.wrapping_add(1);
     let state_pair = Arc::new((Mutex::new(SendBufferState::Init), Condvar::new()));
     let buf = SendBuffer {
-      state_pair,
+      state_pair: state_pair.clone(),
 
       buf: Arc::new(Mutex::new(SendData {
         data:                 VecDeque::with_capacity(TCP_BUF_SIZE),
@@ -112,8 +112,9 @@ impl SendBuffer {
         starting_sequence:   first_seq,
         elems:               VecDeque::with_capacity(MAX_WINDOW_SIZE),
         bytes_in_window:     0usize,
-        max_size:            TCP_BUF_SIZE, // TODO: what should this be to start
-        recv_window_size:    0,            // This will be initialized when we receive SYNACK/ACK
+        max_size:            MTU * 5, // TODO: what should this be to start
+        recv_window_size:    0,       /* This will be initialized when we receive
+                                       * SYNACK/ACK */
         zero_window_probing: false,
         srtt:                INITIAL_SRTT,
       })),
@@ -121,7 +122,12 @@ impl SendBuffer {
       wake_send_thread_tx: Arc::new(Mutex::new(wake_send_thread_tx.clone())),
     };
 
-    buf.start_send_thread(stream_send_tx, wake_send_thread_rx, wake_timeout_thread_tx);
+    buf.start_send_thread(
+      stream_send_tx,
+      wake_send_thread_rx,
+      wake_timeout_thread_tx,
+      state_pair,
+    );
     buf.start_timeout_thread(wake_timeout_thread_rx, wake_send_thread_tx);
     buf
   }
@@ -156,16 +162,9 @@ impl SendBuffer {
     let mut window = self.window.write().unwrap();
     let bytes_acked = window.handle_ack(ack_num, window_size);
 
-    let mut state = self.state_pair.0.lock().unwrap();
-    if window.elems.len() == 0 && *state == SendBufferState::Queueing {
-      debug!("Setting to ready");
-      *state = SendBufferState::Ready;
-      self.state_pair.1.notify_all();
-    }
-
     if bytes_acked > 0u32 {
       self.buf.lock().unwrap().ack(bytes_acked);
-      self.buf_cond.notify_one();
+      self.buf_cond.notify_all();
       self.wake_send_thread()?;
     };
     Ok(())
@@ -196,6 +195,7 @@ impl SendBuffer {
     }
 
     *state = SendBufferState::Queueing;
+    self.state_pair.1.notify_all();
     drop(state);
 
     while bytes_written < data.len() {
@@ -254,10 +254,10 @@ impl SendBuffer {
           return Err(anyhow!(""));
         }
 
-        let mut window = self.window.write().unwrap();
         *state = SendBufferState::FinSent;
-        window.send_fin();
+        let mut window = self.window.write().unwrap();
         self.state_pair.1.notify_all();
+        window.send_fin();
         self.wake_send_thread()?;
         Ok(())
       }
@@ -287,6 +287,10 @@ impl SendBuffer {
     let window = self.window.clone();
     thread::spawn(move || loop {
       let window = window.read().unwrap();
+
+      // clear out dup wakeups so that we don't wake up a bunch of extra times
+      while let Ok(()) = wake_timeout_thread_rx.try_recv() {}
+
       let most_urgent_elem = window.elems.iter().reduce(|acc, item| {
         if acc.time_to_retry < item.time_to_retry {
           acc
@@ -327,7 +331,7 @@ impl SendBuffer {
       }
 
       match wake_timeout_thread_rx.recv() {
-        Ok(()) => (), // debug!("timeout thread woken"),
+        Ok(()) => debug!("timeout thread woken"),
         Err(_) => {
           edebug!("timeout thread died");
           break;
@@ -344,6 +348,7 @@ impl SendBuffer {
     stream_send_tx: Sender<StreamSendThreadMsg>,
     wake_send_thread_rx: Receiver<()>,
     wake_timeout_thread_tx: Sender<()>,
+    state_pair: Arc<(Mutex<SendBufferState>, Condvar)>,
   ) {
     let window = self.window.clone();
     let buf = self.buf.clone();
@@ -352,6 +357,7 @@ impl SendBuffer {
         break;
       }
 
+      let mut state = state_pair.0.lock().unwrap();
       let mut window = window.write().unwrap();
       let buf = buf.lock().unwrap();
 
@@ -368,13 +374,12 @@ impl SendBuffer {
             WindowElementType::Syn => stream_send_tx.send(StreamSendThreadMsg::Syn),
             WindowElementType::Data => {
               debug!("Sending retry");
-              dbg!(curr_seq);
               stream_send_tx.send(StreamSendThreadMsg::Outgoing(
                 curr_seq,
                 Vec::from_iter(buf.read(curr_seq, elem.size as usize).copied()),
               ))
             }
-            WindowElementType::Fin => stream_send_tx.send(StreamSendThreadMsg::Fin(dbg!(curr_seq))),
+            WindowElementType::Fin => stream_send_tx.send(StreamSendThreadMsg::Fin(curr_seq)),
           };
 
           if send_res.is_err() {
@@ -405,6 +410,7 @@ impl SendBuffer {
       let zero_window_probe = window.recv_window_size == 0 && distance_to_end > 0;
 
       if zero_window_probe {
+        debug!("Zero Window Probing");
         window.zero_window_probing = true;
         let send_res = stream_send_tx.send(StreamSendThreadMsg::Outgoing(
           curr_seq,
@@ -419,11 +425,10 @@ impl SendBuffer {
 
       while window.bytes_in_window < max_window_size && distance_to_end > 0 {
         let bytes_left_to_send = max_window_size - window.bytes_in_window;
+
         let bytes_to_send = bytes_left_to_send.min(MTU).min(distance_to_end);
-        let send_res = stream_send_tx.send(StreamSendThreadMsg::Outgoing(
-          curr_seq,
-          Vec::from_iter(buf.read(curr_seq, bytes_to_send).copied()),
-        ));
+        let data = Vec::from_iter(buf.read(curr_seq, bytes_to_send).copied());
+        let send_res = stream_send_tx.send(StreamSendThreadMsg::Outgoing(curr_seq, data));
 
         if send_res.is_err() {
           debug!("Sending to stream failed in SendBuffer, closing");
@@ -441,6 +446,11 @@ impl SendBuffer {
           time_to_retry:  now + rto,
           size:           bytes_to_send as u32,
         });
+      }
+
+      if window.bytes_in_window == buf.data.len() && *state == SendBufferState::Queueing {
+        *state = SendBufferState::Ready;
+        state_pair.1.notify_all()
       }
 
       if wake_timeout_thread_tx.send(()).is_err() {
@@ -779,7 +789,8 @@ mod test {
     recv_data(&send_thread_rx, 1, &data[0..MTU]);
     recv_retry(&send_thread_rx, 1, &data[0..MTU], send_buf.rto());
     assert!(send_buf.handle_ack((MTU as u32) + 1, MTU as u16).is_ok());
-    recv_data(&send_thread_rx, (MTU as u32) + 1, &data[MTU..2 * MTU]);
+    // TODO: can't really test that the next chunk is appropriately sent due to zero window
+    // probing
   }
 
   #[test]

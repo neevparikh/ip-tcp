@@ -141,7 +141,7 @@ impl TcpStream {
     state: TcpStreamState,
     listener_socket: SocketId,
   ) -> Result<()> {
-    let queues = info.queued_streams.lock().unwrap();
+    let mut queues = info.queued_streams.lock().unwrap();
     match queues.get_mut(&listener_socket) {
       None => Err(anyhow!("Unknown listener socket {listener_socket}")),
       Some(queue) => {
@@ -274,8 +274,9 @@ impl TcpStream {
       TcpStreamState::Established => {
         // TODO: Queue this request until all preceding SENDs have been
         // segmentized; then send a FIN segment, enter CLOSING state.
+        drop(internal);
         self.send_buffer.send_fin()?;
-        internal.state = TcpStreamState::FinWait1;
+        // Don't set state to fin wait until fin is actuall sent out
         Ok(())
       }
       TcpStreamState::FinWait1 => Err(anyhow!("connection closing")),
@@ -363,6 +364,9 @@ impl TcpStream {
           debug!("Sending Fin");
           let mut stream = stream.lock().unwrap();
           if VALID_FIN_STATES.contains(&stream.state) {
+            if stream.state == TcpStreamState::Established {
+              stream.state = TcpStreamState::FinWait1;
+            }
             if seq_num >= stream.next_seq {
               debug_assert_eq!(stream.next_seq, seq_num);
               stream.next_seq = seq_num + 1;
@@ -646,7 +650,10 @@ impl TcpStream {
               break;
             }
             if let Some(timeout) = timewait_timeout {
-              if Instant::now() > timeout {
+              if Instant::now() > timeout
+                && [TcpStreamState::FinWait1, TcpStreamState::Closing].contains(&stream.state)
+              {
+                debug!("StreamSendThread woken");
                 debug!("MSL timed out, state is now CLOSED, closing...");
                 stream.state = TcpStreamState::Closed;
                 break;
@@ -661,6 +668,7 @@ impl TcpStream {
           }
         }
       }
+      debug!("StreamSendThread died");
 
       recv_buffer_cond.notify_all();
       cleanup();

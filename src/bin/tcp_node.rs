@@ -3,9 +3,11 @@ use std::fs::File;
 use std::io::{stdin, stdout, BufReader, Read, Write};
 use std::net::Ipv4Addr;
 use std::str::FromStr;
+use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
+use ip_tcp::debug;
 use ip_tcp::ip::{IpLayer, Protocol};
 use ip_tcp::misc::lnx_config::LnxConfig;
 use ip_tcp::tcp::{Port, SocketId, SocketSide, TcpLayer, TcpLayerInfo, TcpListener, TcpStream};
@@ -25,6 +27,7 @@ fn send_file(info: TcpLayerInfo, filename: String, dst_ip: Ipv4Addr, port: Port)
 
   let stream = TcpStream::connect(info, dst_ip, port)?;
 
+  let now = Instant::now();
   loop {
     let n = f.read(&mut buf)?;
     if n == 0 {
@@ -34,6 +37,7 @@ fn send_file(info: TcpLayerInfo, filename: String, dst_ip: Ipv4Addr, port: Port)
     stream.send(&buf[0..n]).unwrap();
   }
   stream.close()?;
+  dbg!(Instant::now().duration_since(now).as_millis());
   Ok(())
 }
 

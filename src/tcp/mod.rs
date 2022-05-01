@@ -34,7 +34,7 @@ const MAX_WINDOW_SIZE: usize = u16::max_value() as usize;
 
 // See this thread for discussion of MTU choice
 // https://stackoverflow.com/questions/2613734/maximum-packet-size-for-a-tcp-connection
-const MTU: usize = 1408;
+const MTU: usize = 1000;
 
 const MAX_SEGMENT_LIFETIME: Duration = Duration::from_secs(1);
 
