@@ -2,18 +2,19 @@ use std::net::Ipv4Addr;
 
 use anyhow::{anyhow, Result};
 
-use crate::{edebug, protocol::Protocol};
+use super::protocol::Protocol;
+use crate::edebug;
 
 #[derive(Debug)]
 pub struct IpPacket {
   /// Contains all of the mandatory header information
-  header: [u8; 20],
+  header:      [u8; 20],
   /// Option data must have len of a multiple of 4
   option_data: Vec<u8>,
   /// Actual data associated with packet
-  data: Vec<u8>,
+  data:        Vec<u8>,
   /// Source address set
-  source_set: bool,
+  source_set:  bool,
 }
 
 impl IpPacket {
@@ -41,10 +42,10 @@ impl IpPacket {
     option_data: &[u8],
   ) -> Result<IpPacket> {
     let mut packet = IpPacket {
-      header: [0u8; 20],
+      header:      [0u8; 20],
       option_data: option_data.to_vec(),
-      data: data.to_vec(),
-      source_set: false,
+      data:        data.to_vec(),
+      source_set:  false,
     };
 
     packet.set_version(4)?;
@@ -82,10 +83,10 @@ impl IpPacket {
     }
 
     let mut packet = IpPacket {
-      header: [0u8; 20],
+      header:      [0u8; 20],
       option_data: Vec::new(),
-      data: Vec::new(),
-      source_set: true,
+      data:        Vec::new(),
+      source_set:  true,
     };
 
     packet.header.copy_from_slice(&bytes[0..20]);
@@ -136,6 +137,10 @@ impl IpPacket {
     res.extend(&self.option_data);
     res.extend(&self.data);
     return res;
+  }
+
+  pub fn header(&self) -> &[u8] {
+    &self.header
   }
 
   pub fn data(&self) -> &[u8] {
@@ -334,6 +339,11 @@ impl IpPacket {
     self.calculate_and_set_checksum();
   }
 
+  /// sets the payload of the ip packet
+  pub(crate) fn _set_data(&mut self, data: Vec<u8>) {
+    self.data = data;
+  }
+
   fn validate_options(&self) -> Result<()> {
     if self.option_data.len() % 4 != 0 {
       return Err(anyhow!(
@@ -352,7 +362,7 @@ impl IpPacket {
 #[derive(Debug, PartialEq)]
 pub struct FragmentOffset {
   /// This is the second bit in the flags section of the IP header
-  pub(crate) dont_fragment: bool,
+  pub(crate) dont_fragment:  bool,
   /// This is the third bit in the flags section of the IP header
   pub(crate) more_fragments: bool,
 
@@ -602,7 +612,5 @@ mod tests {
 
     let invalid_offset = FragmentOffset::MAX_FRAGMENT_OFFSET + 1;
     assert!(FragmentOffset::new(true, true, invalid_offset).is_err());
-    let mut fragment_offset = FragmentOffset::new(true, true, 0).unwrap();
-    assert!(fragment_offset.set_fragment_offset(invalid_offset).is_err());
   }
 }

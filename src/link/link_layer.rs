@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
-use crate::interface::{Interface, State};
-use crate::lnx_config::LnxConfig;
-use crate::{debug, InterfaceId};
+use super::interface::{Interface, InterfaceId, State};
+use crate::debug;
+use crate::misc::lnx_config::LnxConfig;
 
 const MAX_SIZE: usize = 65536;
 
@@ -20,10 +20,10 @@ pub type LinkRecvMsg = (InterfaceId, Vec<u8>);
 pub type SharedInterfaces = Arc<RwLock<Vec<Interface>>>;
 
 pub struct LinkLayer {
-  interfaces: SharedInterfaces,
-  addr_to_id: Arc<HashMap<SocketAddr, InterfaceId>>,
-  local_link: UdpSocket,
-  closed: Arc<AtomicBool>,
+  interfaces:  SharedInterfaces,
+  addr_to_id:  Arc<HashMap<SocketAddr, InterfaceId>>,
+  local_link:  UdpSocket,
+  closed:      Arc<AtomicBool>,
   recv_handle: Option<thread::JoinHandle<Result<()>>>,
 }
 
@@ -47,10 +47,10 @@ impl LinkLayer {
     }
 
     LinkLayer {
-      interfaces: Arc::new(RwLock::new(config.interfaces)),
-      addr_to_id: Arc::new(interface_id_by_their_addr),
-      local_link: config.local_link,
-      closed: Arc::new(AtomicBool::new(false)),
+      interfaces:  Arc::new(RwLock::new(config.interfaces)),
+      addr_to_id:  Arc::new(interface_id_by_their_addr),
+      local_link:  config.local_link,
+      closed:      Arc::new(AtomicBool::new(false)),
       recv_handle: None,
     }
   }
@@ -123,7 +123,7 @@ impl LinkLayer {
   }
 
   /// Returns the locked state of the specified interface
-  pub fn get_state(&self, interface_id: InterfaceId) -> Result<State> {
+  pub fn _get_state(&self, interface_id: InterfaceId) -> Result<State> {
     let interfaces = self.get_interfaces();
     if interface_id >= interfaces.len() {
       Err(anyhow!("Unknown interface id"))

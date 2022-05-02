@@ -1,20 +1,19 @@
-use std::cmp;
 use std::collections::BTreeMap;
-use std::fmt;
 use std::net::Ipv4Addr;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
-use std::thread;
 use std::time::{Duration, Instant};
-
-use crate::interface::{Interface, State};
-use crate::ip_packet::IpPacket;
-use crate::link_layer::SharedInterfaces;
-use crate::protocol::Protocol;
-use crate::rip_message::{RipCommand, RipEntry, RipMsg, INFINITY_COST};
-use crate::{debug, edebug, HandlerFunction, InterfaceId, IpSendMsg};
+use std::{cmp, fmt, thread};
 
 use anyhow::Result;
+
+use super::ip_packet::IpPacket;
+use super::protocol::Protocol;
+use super::rip_message::{RipCommand, RipEntry, RipMsg, INFINITY_COST};
+use super::HandlerFunction;
+use crate::link::interface::{Interface, InterfaceId, State};
+use crate::link::link_layer::SharedInterfaces;
+use crate::{debug, edebug};
 
 type PartialTable = BTreeMap<Ipv4Addr, RoutingEntry>;
 type InternalTable = Arc<Mutex<PartialTable>>;
@@ -23,22 +22,22 @@ const SUBNET_MASK: u32 = u32::from_ne_bytes([255, 255, 255, 255]);
 
 #[derive(Debug)]
 pub struct ForwardingTable {
-  table: InternalTable,
-  neighbors: SharedInterfaceTable,
+  table:          InternalTable,
+  neighbors:      SharedInterfaceTable,
   our_interfaces: SharedInterfaceTable,
-  interface_map: SharedInterfaces,
+  interface_map:  SharedInterfaces,
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct RoutingEntry {
-  pub next_hop: InterfaceId,
-  pub cost: u8,
+  pub next_hop:    InterfaceId,
+  pub cost:        u8,
   expiration_time: Option<Instant>,
 }
 
 impl ForwardingTable {
   pub fn new(
-    ip_send_tx: Sender<IpSendMsg>,
+    ip_send_tx: Sender<IpPacket>,
     interface_map: Arc<RwLock<Vec<Interface>>>,
   ) -> (HandlerFunction, ForwardingTable) {
     let unlocked_interfaces = interface_map.read().unwrap();
@@ -49,8 +48,8 @@ impl ForwardingTable {
           (
             interface.our_ip,
             RoutingEntry {
-              next_hop: interface.id,
-              cost: 0,
+              next_hop:        interface.id,
+              cost:            0,
               expiration_time: None,
             },
           )
@@ -101,7 +100,7 @@ impl ForwardingTable {
 
   /// Returns the handler function which updates the forwarding table based off of
   /// RIP packets
-  pub fn get_rip_handler(&self, ip_send_tx: Sender<IpSendMsg>) -> HandlerFunction {
+  pub fn get_rip_handler(&self, ip_send_tx: Sender<IpPacket>) -> HandlerFunction {
     let table = self.table.clone();
     let neighbors = self.neighbors.clone();
     let our_interfaces = self.our_interfaces.clone();
@@ -147,8 +146,8 @@ impl ForwardingTable {
             debug_assert!(entry.cost <= INFINITY_COST);
             let new_cost = cmp::min(entry.cost + 1, INFINITY_COST);
             let new_routing_entry = RoutingEntry {
-              cost: new_cost,
-              next_hop: source_interface,
+              cost:            new_cost,
+              next_hop:        source_interface,
               expiration_time: Some(Instant::now() + Duration::from_secs(12)),
             };
 
@@ -212,12 +211,12 @@ impl ForwardingTable {
     }
   }
 
-  pub fn start_send_keep_alive_thread(&self, ip_send_tx: Sender<IpSendMsg>) {
+  pub fn start_send_keep_alive_thread(&self, ip_send_tx: Sender<IpPacket>) {
     let table = self.table.clone();
     let neighbors = self.neighbors.clone();
     let our_interfaces = self.our_interfaces.clone();
     thread::spawn(move || {
-      debug!("Starting keep alive thread");
+      // debug!("Starting keep alive thread");
       loop {
         let table = table.lock().unwrap().clone();
         if let Err(e) = ForwardingTable::make_response_and_send_to_all(
@@ -240,7 +239,7 @@ impl ForwardingTable {
   ///
   /// Note: could do something smarter with a priority queue sorted by expiration times
   /// but I think that would be premature optimization.
-  fn start_reaper_thread(&self, ip_send_tx: Sender<IpSendMsg>) {
+  fn start_reaper_thread(&self, ip_send_tx: Sender<IpPacket>) {
     let table = self.table.clone();
     let interface_map = self.interface_map.clone();
     let neighbors = self.neighbors.clone();
@@ -291,7 +290,7 @@ impl ForwardingTable {
   }
 
   fn make_request_and_send_to_all(
-    ip_send_tx: &Sender<IpSendMsg>,
+    ip_send_tx: &Sender<IpPacket>,
     neighbors: SharedInterfaceTable,
   ) -> Result<()> {
     for (destination_address, _interface_id) in neighbors.iter() {
@@ -299,17 +298,17 @@ impl ForwardingTable {
         command: RipCommand::Request,
         entries: Vec::new(),
       };
-      debug!(
-        "Sending request to destination_address {:?}",
-        destination_address
-      );
+      // debug!(
+      //   "Sending request to destination_address {:?}",
+      //   destination_address
+      // );
       ForwardingTable::make_and_send(rip_msg, &ip_send_tx, destination_address.clone())?
     }
     Ok(())
   }
 
   fn make_response_and_send_to_all(
-    ip_send_tx: &Sender<IpSendMsg>,
+    ip_send_tx: &Sender<IpPacket>,
     neighbors: &SharedInterfaceTable,
     table: PartialTable,
     our_interfaces: &SharedInterfaceTable,
@@ -334,10 +333,10 @@ impl ForwardingTable {
           mask: SUBNET_MASK,
         });
       }
-      debug!(
-        "Sending response to destination_address {:?}",
-        destination_address
-      );
+      // debug!(
+      //   "Sending response to destination_address {:?}",
+      //   destination_address
+      // );
 
       ForwardingTable::make_and_send(rip_msg, &ip_send_tx, destination_address.clone())?
     }
@@ -346,7 +345,7 @@ impl ForwardingTable {
 
   fn make_and_send(
     rip_msg: RipMsg,
-    ip_send_tx: &Sender<IpSendMsg>,
+    ip_send_tx: &Sender<IpPacket>,
     destination_address: Ipv4Addr,
   ) -> Result<()> {
     let data = rip_msg.pack();

@@ -1,5 +1,5 @@
 [package]
-name = "ip"
+name = "ip_tcp"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,4 +9,6 @@ edition = "2021"
 anyhow = "1.0.54"
 clap = {version = "3.1.2", features = ["derive"]}
 shellwords = "1.1.0"
-ipnet = "2"
+etherparse = "0.10.1"
+rand = "0.8.5"
+ntest = "0.7.5"

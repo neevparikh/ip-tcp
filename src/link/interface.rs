@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Error, Result};
 use std::fmt;
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
 
-use crate::InterfaceId;
+use anyhow::{anyhow, Error, Result};
+pub type InterfaceId = usize;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum State {
@@ -22,14 +22,14 @@ impl FromStr for State {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Interface {
-  pub id: InterfaceId,
-  pub outgoing_link: String,
+  pub id:                 InterfaceId,
+  pub outgoing_link:      String,
   pub outgoing_link_addr: SocketAddr,
-  pub our_ip: Ipv4Addr,
-  pub their_ip: Ipv4Addr,
-  state: State,
+  pub our_ip:             Ipv4Addr,
+  pub their_ip:           Ipv4Addr,
+  state:                  State,
 }
 
 impl Interface {

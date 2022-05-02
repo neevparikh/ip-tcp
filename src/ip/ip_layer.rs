@@ -8,26 +8,26 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
-use crate::forwarding_table::ForwardingTable;
-use crate::interface::State;
-use crate::ip_packet::IpPacket;
-use crate::link_layer::LinkLayer;
-use crate::lnx_config::LnxConfig;
-use crate::protocol::Protocol;
-use crate::rip_message::INFINITY_COST;
-use crate::{debug, edebug, InterfaceId, LinkSendMsg};
-use crate::{HandlerFunction, LinkRecvMsg};
+use super::forwarding_table::ForwardingTable;
+use super::ip_packet::IpPacket;
+use super::protocol::Protocol;
+use super::rip_message::INFINITY_COST;
+use super::HandlerFunction;
+use crate::link::interface::{InterfaceId, State};
+use crate::link::link_layer::{LinkLayer, LinkRecvMsg, LinkSendMsg};
+use crate::misc::lnx_config::LnxConfig;
+use crate::{debug, edebug};
 
 type HandlerMap = HashMap<Protocol, HandlerFunction>;
-pub type IpSendMsg = IpPacket;
 
 pub struct IpLayer {
-  handlers: Arc<Mutex<HandlerMap>>,
-  link_layer: Arc<RwLock<LinkLayer>>,
-  closed: Arc<AtomicBool>,
-  send_handle: Option<thread::JoinHandle<()>>,
-  ip_send_tx: Sender<IpSendMsg>,
-  table: Arc<ForwardingTable>,
+  handlers:     Arc<Mutex<HandlerMap>>,
+  link_layer:   Arc<RwLock<LinkLayer>>,
+  closed:       Arc<AtomicBool>,
+  send_handle:  Option<thread::JoinHandle<()>>,
+  ip_send_tx:   Sender<IpPacket>,
+  table:        Arc<ForwardingTable>,
+  our_ip_addrs: HashSet<Ipv4Addr>,
 }
 
 impl IpLayer {
@@ -53,6 +53,7 @@ impl IpLayer {
       send_handle: None,
       table,
       ip_send_tx,
+      our_ip_addrs: our_ip_addrs.clone(),
     };
 
     node.register_handler(Protocol::RIP, rip_handler);
@@ -73,6 +74,15 @@ impl IpLayer {
     node
   }
 
+  /// Returns a channel which can be used by other protocols to pass messages down to the IP level
+  pub fn get_ip_send_tx(&self) -> Sender<IpPacket> {
+    self.ip_send_tx.clone()
+  }
+
+  pub fn get_our_ip_addrs(&self) -> HashSet<Ipv4Addr> {
+    self.our_ip_addrs.clone()
+  }
+
   fn close(&mut self) {
     self.closed.store(true, Ordering::SeqCst);
     if let Some(handle) = self.send_handle.take() {
@@ -87,7 +97,7 @@ impl IpLayer {
     link_recv_rx: Receiver<LinkRecvMsg>,
     handlers: Arc<Mutex<HandlerMap>>,
     our_ip_addrs: HashSet<Ipv4Addr>,
-    ip_send_tx: Sender<IpSendMsg>,
+    ip_send_tx: Sender<IpPacket>,
   ) {
     loop {
       match link_recv_rx.recv() {
@@ -102,10 +112,10 @@ impl IpLayer {
           };
 
           if our_ip_addrs.contains(&packet.destination_address()) {
-            debug!(
-              "packet dst {:?} ours, calling handle_packet...",
-              packet.destination_address()
-            );
+            // debug!(
+            //   "packet dst {:?} ours, calling handle_packet...",
+            //   packet.destination_address()
+            // );
             match IpLayer::handle_packet(&handlers, interface, &packet) {
               Ok(()) => (),
               Err(e) => edebug!("Packet handler errored: {e}"),
@@ -136,7 +146,7 @@ impl IpLayer {
   }
 
   fn send_thread(
-    ip_send_rx: Receiver<IpSendMsg>,
+    ip_send_rx: Receiver<IpPacket>,
     link_send_tx: Sender<LinkSendMsg>,
     table: Arc<ForwardingTable>,
     closed: Arc<AtomicBool>,
@@ -217,6 +227,20 @@ impl IpLayer {
     }
   }
 
+  pub fn get_src_from_dst(&self, dst_ip: Ipv4Addr) -> Option<Ipv4Addr> {
+    let link_layer = self.link_layer.read().unwrap();
+    let interfaces = link_layer.get_interfaces();
+    let next_hop = match self.table.get_next_hop(dst_ip) {
+      Some(next_hop) => next_hop,
+      None => return None,
+    };
+
+    match interfaces.get(next_hop) {
+      Some(interface) => Some(interface.our_ip),
+      None => None,
+    }
+  }
+
   pub fn register_handler(&mut self, protocol_num: Protocol, handler: HandlerFunction) {
     self.handlers.lock().unwrap().insert(protocol_num, handler);
   }
@@ -227,7 +251,7 @@ impl IpLayer {
     packet: &IpPacket,
   ) -> Result<()> {
     let protocol = packet.protocol();
-    debug!("Handling packet with protocol {protocol}");
+    // debug!("Handling packet with protocol {protocol}");
     let handlers = handlers.lock().unwrap();
     let handler = handlers.get(&protocol);
 
