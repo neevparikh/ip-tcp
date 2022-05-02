@@ -41,7 +41,7 @@ enum SendBufferState {
   /// Fin has been sent. Transitions to closed when Fin is acked or hits max retries
   FinSent,
   /// SendBuffer is dead
-  Closed,
+  _Closed,
 }
 
 #[derive(Debug)]
@@ -266,15 +266,15 @@ impl SendBuffer {
         debug!("send_fin called more than once, ignoring...");
         Err(anyhow!("connection closing"))
       }
-      SendBufferState::Closed => Err(anyhow!("connection closing")),
+      SendBufferState::_Closed => Err(anyhow!("connection closing")),
     }
   }
 
-  pub fn srtt(&self) -> Duration {
+  pub fn _srtt(&self) -> Duration {
     self.window.read().unwrap().srtt
   }
 
-  pub fn rto(&self) -> Duration {
+  pub fn _rto(&self) -> Duration {
     self.window.read().unwrap().rto()
   }
 
@@ -325,8 +325,8 @@ impl SendBuffer {
       drop(window);
 
       match wake_timeout_thread_rx.recv_timeout(retry_timeout) {
-        Ok(()) => debug!("timeout thread woken"),
-        Err(RecvTimeoutError::Timeout) => debug!("timeout thread timeout"),
+        Ok(()) => (),                         // debug!("timeout thread woken"),
+        Err(RecvTimeoutError::Timeout) => (), // debug!("timeout thread timeout"),
         Err(RecvTimeoutError::Disconnected) => {
           edebug!("timeout thread died");
           break;
@@ -715,7 +715,7 @@ mod test {
     let data = vec![1u8, 2u8, 3u8, 4u8];
     send_buf.write_data(&data).unwrap();
     recv_data(&send_thread_rx, 1u32, &data);
-    recv_retry(&send_thread_rx, 1u32, &data, send_buf.rto());
+    recv_retry(&send_thread_rx, 1u32, &data, send_buf._rto());
   }
 
   /// Tests that acked bytes aren't resent
@@ -728,7 +728,7 @@ mod test {
 
     send_buf.handle_ack(5, u16::max_value()).unwrap();
 
-    recv_no_retry(&send_thread_rx, send_buf.rto());
+    recv_no_retry(&send_thread_rx, send_buf._rto());
   }
 
   #[test]
@@ -739,7 +739,7 @@ mod test {
     recv_data(&send_thread_rx, 1u32, &data);
 
     send_buf.handle_ack(2, u16::max_value()).unwrap();
-    recv_retry(&send_thread_rx, 2u32, &[2u8, 3u8, 4u8], send_buf.rto());
+    recv_retry(&send_thread_rx, 2u32, &[2u8, 3u8, 4u8], send_buf._rto());
   }
 
   #[test]
@@ -782,7 +782,7 @@ mod test {
     let data = [0u8; MTU * 2];
     send_buf.write_data(&data).unwrap();
     recv_data(&send_thread_rx, 1, &data[0..MTU]);
-    recv_retry(&send_thread_rx, 1, &data[0..MTU], send_buf.rto());
+    recv_retry(&send_thread_rx, 1, &data[0..MTU], send_buf._rto());
     assert!(send_buf.handle_ack((MTU as u32) + 1, MTU as u16).is_ok());
     // TODO: can't really test that the next chunk is appropriately sent due to zero window
     // probing

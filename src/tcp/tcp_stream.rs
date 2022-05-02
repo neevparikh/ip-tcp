@@ -2,8 +2,8 @@ use std::fmt::Debug;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{thread, vec};
 
 use anyhow::{anyhow, Result};
 use etherparse::TcpHeader;
@@ -35,18 +35,17 @@ pub(super) enum StreamSendThreadMsg {
   Shutdown,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TcpStream {
-  internal: Arc<Mutex<TcpStreamInternal>>,
+  pub(super) internal: Arc<Mutex<TcpStreamInternal>>,
 
   /// data
   recv_buffer:      Arc<Mutex<RecvBuffer>>,
   recv_buffer_cond: Arc<Condvar>,
   send_buffer:      Arc<SendBuffer>,
 
-  /// TODO: how should commands like SHUTDOWN and CLOSE be passed
-  /// Selecting???
-  stream_tx: Arc<Mutex<Sender<IpTcpPacket>>>, // thing for others to send this stream a packet
+  // thing for others to send this stream a packet
+  pub(super) stream_tx: Arc<Mutex<Sender<IpTcpPacket>>>,
 }
 
 impl TcpStream {
@@ -67,19 +66,23 @@ impl TcpStream {
     self.internal.lock().unwrap().state()
   }
 
+  /// get stream socket_id
+  pub fn socket_id(&self) -> SocketId {
+    self.internal.lock().unwrap().socket_id
+  }
+
   fn set_state(&mut self, state: TcpStreamState) {
     self.internal.lock().unwrap().state = state;
   }
 
   /// get window size
-  pub fn get_window_size(&self) -> u16 {
+  pub fn window_size(&self) -> u16 {
     self.recv_buffer.lock().unwrap().get_window_size()
   }
 }
 
 impl TcpStream {
   fn new(
-    // TODO, do we need this? source_ip: Ipv4Addr,
     source_ip: Option<Ipv4Addr>,
     source_port: Port,
     destination_ip: Option<Ipv4Addr>,
@@ -87,6 +90,8 @@ impl TcpStream {
     initial_state: TcpStreamState,
     ip_send_tx: Sender<IpPacket>,
     cleanup: Box<dyn Fn() + Send>,
+    socket_id: SocketId,
+    info: TcpLayerInfo,
   ) -> TcpStream {
     let (stream_tx, stream_rx) = mpsc::channel();
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
@@ -106,6 +111,7 @@ impl TcpStream {
       next_seq: initial_sequence_number.wrapping_add(1),
       state: initial_state,
       ip_send_tx: ip_send_tx.clone(),
+      socket_id,
     }));
 
     let recv_buffer = Arc::new(Mutex::new(RecvBuffer::new(send_thread_tx.clone())));
@@ -123,6 +129,7 @@ impl TcpStream {
       send_buffer.clone(),
       stream_rx,
       cleanup,
+      info,
     );
     TcpStream::start_send_thread(internal.clone(), send_thread_rx);
 
@@ -137,32 +144,88 @@ impl TcpStream {
 
   pub(super) fn spawn_and_queue(
     info: &TcpLayerInfo,
-    port: Port,
-    state: TcpStreamState,
+    src_port: Port,
     listener_socket: SocketId,
+    dst_ip: Ipv4Addr,
+    dst_port: Port,
+    sequence_number: u32,
   ) -> Result<()> {
     let mut queues = info.queued_streams.lock().unwrap();
     match queues.get_mut(&listener_socket) {
       None => Err(anyhow!("Unknown listener socket {listener_socket}")),
-      Some(queue) => {
+      Some((queue, available_addrs)) => {
         let mut sockets_and_ports = info.sockets_and_ports.lock().unwrap();
         let new_socket = sockets_and_ports.get_new_socket();
+        let src_ip = available_addrs.iter().next().cloned();
+        if src_ip.is_none() {
+          panic!("No ip addresses available!");
+        }
         let stream = Arc::new(TcpStream::new(
+          src_ip,
+          src_port,
           None,
-          port,
           None,
-          None,
-          state,
+          TcpStreamState::Spawning,
           info.ip_send_tx.clone(),
           info.make_cleanup_callback(new_socket),
+          new_socket,
+          info.clone(),
         ));
-        sockets_and_ports.add_port(port);
-        queue.push_back(stream);
+        let mut internal = stream.internal.lock().unwrap();
+        internal.set_destination_or_check(dst_ip, dst_port);
+        stream
+          .recv_buffer
+          .lock()
+          .unwrap()
+          .set_initial_seq_num_data(sequence_number);
+        internal.set_initial_ack(sequence_number.wrapping_add(1));
+        match stream.send_buffer.send_syn() {
+          Ok(()) => {
+            internal.state = TcpStreamState::SynReceived;
+          }
+          Err(e) => {
+            edebug!("Failed to send syn_ack {e}, closing");
+            internal.state = TcpStreamState::Closed;
+          }
+        }
+        drop(internal);
+        sockets_and_ports.add_port(src_port);
+        queue.send(stream)?;
         Ok(())
       }
     }
   }
 
+  /// Create a listener socket, as a result of bind
+  pub(super) fn listen(src_port: Port, info: TcpLayerInfo) -> Result<Arc<TcpStream>> {
+    let mut sockets_and_ports = info.sockets_and_ports.lock().unwrap();
+    if sockets_and_ports.contains_port(src_port) {
+      Err(anyhow!("Error: port {src_port} in use"))
+    } else {
+      let new_socket = sockets_and_ports.get_new_socket();
+      drop(sockets_and_ports);
+      let stream = Arc::new(TcpStream::new(
+        None,
+        src_port,
+        None,
+        None,
+        TcpStreamState::Listen,
+        info.ip_send_tx.clone(),
+        info.make_cleanup_callback(new_socket),
+        new_socket,
+        info.clone(),
+      ));
+      info
+        .streams
+        .write()
+        .unwrap()
+        .insert(new_socket, stream.clone());
+
+      Ok(stream)
+    }
+  }
+
+  /// Create a regular socket, connecting to a dst_ip:dst_port addr
   pub fn connect(info: TcpLayerInfo, dst_ip: Ipv4Addr, dst_port: Port) -> Result<Arc<TcpStream>> {
     let mut sockets_and_ports = info.sockets_and_ports.lock().unwrap();
     let src_port = sockets_and_ports.get_new_port();
@@ -172,7 +235,7 @@ impl TcpStream {
     if src_ip.is_none() {
       panic!("No ip addresses!");
     }
-    let stream = TcpStream::new(
+    let stream = Arc::new(TcpStream::new(
       src_ip,
       src_port,
       Some(dst_ip),
@@ -180,9 +243,10 @@ impl TcpStream {
       TcpStreamState::SynSent,
       ip_send_tx,
       info.make_cleanup_callback(new_socket),
-    );
+      new_socket,
+      info.clone(),
+    ));
 
-    let stream = Arc::new(stream);
     info
       .streams
       .write()
@@ -208,8 +272,8 @@ impl TcpStream {
   }
 
   /// Called by TcpLayer
-  pub fn recv(&self, num_bytes: usize, should_block: bool) -> Result<Vec<u8>> {
-    let mut data = vec![0u8; num_bytes];
+  pub fn recv(&self, data: &mut [u8], should_block: bool) -> Result<usize> {
+    let num_bytes = data.len();
     let mut bytes_read = 0;
     if should_block {
       loop {
@@ -223,7 +287,11 @@ impl TcpStream {
         }
         // Close wait is a valid recv state, however we know that no more data is coming
         if state == TcpStreamState::CloseWait {
-          break;
+          if bytes_read > 0 {
+            return Ok(bytes_read);
+          } else {
+            break;
+          }
         }
 
         let _ = self.recv_buffer_cond.wait(buf);
@@ -233,7 +301,7 @@ impl TcpStream {
       if !VALID_RECV_STATES.contains(&state) {
         Err(anyhow!("Error: connection closing"))
       } else if bytes_read == num_bytes {
-        Ok(data)
+        Ok(bytes_read)
       } else if state == TcpStreamState::CloseWait {
         Err(anyhow!("Error: connection closing"))
       } else {
@@ -241,10 +309,9 @@ impl TcpStream {
       }
     } else {
       let mut buf = self.recv_buffer.lock().unwrap();
-      let bytes_read = buf.read_data(&mut data);
+      let bytes_read = buf.read_data(data);
       debug_assert!(bytes_read <= num_bytes);
-      data.resize(bytes_read, 0u8);
-      Ok(data)
+      Ok(bytes_read)
     }
   }
 
@@ -254,6 +321,11 @@ impl TcpStream {
   pub fn close(&self) -> Result<()> {
     let mut internal = self.internal.lock().unwrap();
     match internal.state {
+      TcpStreamState::Spawning => {
+        debug!("Warning: told to close in spawning state...");
+        internal.state = TcpStreamState::Closed;
+        Ok(())
+      }
       TcpStreamState::Listen => {
         // TODO: Any outstanding RECEIVEs are returned with "error:  closing"
         // responses.  Delete TCB, enter CLOSED state, and return.
@@ -317,7 +389,7 @@ impl TcpStream {
         Ok(StreamSendThreadMsg::Syn) => {
           let mut stream = stream.lock().unwrap();
           match stream.state {
-            TcpStreamState::Listen | TcpStreamState::SynSent => {
+            TcpStreamState::Spawning | TcpStreamState::Listen | TcpStreamState::SynSent => {
               if let Err(_e) = stream.send_syn() {
                 edebug!("Failed to send syn");
                 break;
@@ -399,6 +471,7 @@ impl TcpStream {
     send_buffer: Arc<SendBuffer>,
     stream_rx: Receiver<IpTcpPacket>,
     cleanup: Box<dyn Fn() + Send>,
+    info: TcpLayerInfo,
   ) {
     thread::spawn(move || {
       let handle_incoming_ack_data =
@@ -455,29 +528,28 @@ impl TcpStream {
           Ok((ip_header, tcp_header, data)) => {
             let mut stream = stream.lock().unwrap();
             match stream.state {
+              TcpStreamState::Spawning => {
+                debug!("Got packet in spawning state, {}", stream.socket_id);
+              }
               TcpStreamState::Listen => {
                 if tcp_header.syn {
                   let ip: Ipv4Addr = ip_header.source.into();
                   let port = tcp_header.source_port;
-                  stream.set_destination_or_check(ip, port);
 
-                  stream.set_source_ip(ip_header.destination.into());
-                  recv_buffer
-                    .lock()
-                    .unwrap()
-                    .set_initial_seq_num_data(tcp_header.sequence_number);
-                  stream.set_initial_ack(tcp_header.sequence_number.wrapping_add(1));
-
-                  // Note ack will be sent on the syn since we are in SynReceived
-                  match send_buffer.send_syn() {
-                    Ok(()) => {
-                      stream.state = TcpStreamState::SynReceived;
-                    }
-                    Err(e) => {
-                      edebug!("Failed to send syn_ack {e}, closing");
-                      stream.state = TcpStreamState::Closed;
-                    }
-                  }
+                  TcpStream::spawn_and_queue(
+                    &info,
+                    stream.source_port(),
+                    stream.socket_id,
+                    ip,
+                    port,
+                    tcp_header.sequence_number,
+                  )
+                  .unwrap_or_else(|e| {
+                    edebug!(
+                      "Failed to spawn new connection on listener socket {}, {e}",
+                      stream.socket_id
+                    )
+                  });
                 }
               }
               TcpStreamState::SynReceived => {
@@ -663,7 +735,10 @@ impl TcpStream {
           Err(RecvTimeoutError::Disconnected) => {
             let mut stream = stream.lock().unwrap();
             stream.state = TcpStreamState::Closed;
-            debug!("Listen stream_rx closed, closing...");
+            debug!(
+              "Listen for {} stream_rx closed, closing...",
+              stream.socket_id
+            );
             break;
           }
         }

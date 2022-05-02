@@ -340,7 +340,7 @@ impl IpPacket {
   }
 
   /// sets the payload of the ip packet
-  pub(crate) fn set_data(&mut self, data: Vec<u8>) {
+  pub(crate) fn _set_data(&mut self, data: Vec<u8>) {
     self.data = data;
   }
 

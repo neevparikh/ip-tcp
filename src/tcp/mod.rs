@@ -41,6 +41,8 @@ const MAX_SEGMENT_LIFETIME: Duration = Duration::from_secs(1);
 #[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
 pub enum TcpStreamState {
   Closed, // RFC describes CLOSED as a fictitious state, we use it internally for cleanup
+  Spawning, /* Internal state to handle logic when creating a new connection on accept (equiv
+           * to LISTEN in many ways) */
   Listen,
   SynReceived,
   SynSent,
@@ -55,11 +57,13 @@ pub enum TcpStreamState {
 
 /// Note that these should be thought of as the valid states to retry sending a syn packet, which
 /// is while SynSent is in there
-const VALID_SYN_STATES: [TcpStreamState; 3] = [
+const VALID_SYN_STATES: [TcpStreamState; 4] = [
+  TcpStreamState::Spawning,
   TcpStreamState::Listen,
   TcpStreamState::SynReceived,
   TcpStreamState::SynSent,
 ];
+
 /// Again these are states we should be okay retrying a fin
 const VALID_FIN_STATES: [TcpStreamState; 6] = [
   TcpStreamState::SynReceived,
@@ -69,9 +73,12 @@ const VALID_FIN_STATES: [TcpStreamState; 6] = [
   TcpStreamState::CloseWait,
   TcpStreamState::LastAck,
 ];
+
 const VALID_SEND_STATES: [TcpStreamState; 2] =
   [TcpStreamState::Established, TcpStreamState::CloseWait];
-const VALID_RECV_STATES: [TcpStreamState; 7] = [
+
+const VALID_RECV_STATES: [TcpStreamState; 8] = [
+  TcpStreamState::Spawning,
   TcpStreamState::Listen,
   TcpStreamState::SynSent,
   TcpStreamState::SynReceived,
@@ -80,6 +87,7 @@ const VALID_RECV_STATES: [TcpStreamState; 7] = [
   TcpStreamState::FinWait2,
   TcpStreamState::CloseWait,
 ];
+
 const VALID_ACK_STATES: [TcpStreamState; 5] = [
   TcpStreamState::SynSent,
   TcpStreamState::FinWait1,

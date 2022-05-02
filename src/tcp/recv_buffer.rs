@@ -470,7 +470,7 @@ mod test {
     );
     let mut expected = vec![2u8; TCP_BUF_SIZE / 2];
     expected.append(&mut vec![1u8; TCP_BUF_SIZE - (TCP_BUF_SIZE / 2)]);
-    assert_eq!(buf.buf.get_raw_buf().clone(), &expected);
+    assert_eq!(buf.buf._get_raw_buf().clone(), &expected);
   }
 
   #[test]

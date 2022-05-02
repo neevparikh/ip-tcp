@@ -1,16 +1,17 @@
 use std::any::type_name;
 use std::fs::File;
-use std::io::{stdin, stdout, BufReader, Read, Write};
+use std::io::{stdin, stdout, Read, Write};
 use std::net::Ipv4Addr;
 use std::str::FromStr;
+use std::thread;
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use ip_tcp::debug;
 use ip_tcp::ip::{IpLayer, Protocol};
 use ip_tcp::misc::lnx_config::LnxConfig;
 use ip_tcp::tcp::{Port, SocketId, SocketSide, TcpLayer, TcpLayerInfo, TcpListener, TcpStream};
+use ip_tcp::{debug, edebug};
 use shellwords;
 
 #[derive(Parser, Debug)]
@@ -37,12 +38,28 @@ fn send_file(info: TcpLayerInfo, filename: String, dst_ip: Ipv4Addr, port: Port)
     stream.send(&buf[0..n]).unwrap();
   }
   stream.close()?;
-  dbg!(Instant::now().duration_since(now).as_millis());
+  debug!("Time: {}", Instant::now().duration_since(now).as_millis());
   Ok(())
 }
 
-fn recv_file(filename: String, port: Port) -> Result<()> {
-  todo!()
+fn recv_file(info: TcpLayerInfo, filename: String, port: Port) -> Result<()> {
+  let mut f = File::create(filename)?;
+  let mut listener = TcpListener::bind(port, info)?;
+  let stream = listener.accept()?;
+  let mut buf = [0u8; 2usize.pow(14)];
+
+  let now = Instant::now();
+  loop {
+    match stream.recv(&mut buf, true) {
+      Ok(_) => f.write_all(&buf)?,
+      Err(_) => {
+        stream.close()?;
+        break;
+      }
+    }
+  }
+  debug!("Time: {}", Instant::now().duration_since(now).as_millis());
+  Ok(())
 }
 
 fn check_len(tokens: &[String], expected: usize) -> Result<()> {
@@ -153,7 +170,11 @@ h, help                                   - show this help"
   )
 }
 
-fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) -> Result<bool> {
+fn parse_and_run_cmd(
+  tokens: Vec<String>,
+  ip_layer: &mut IpLayer,
+  tcp_layer: &mut TcpLayer,
+) -> Result<bool> {
   let cmd = tokens[0].clone();
   match cmd.as_str() {
     // we can unwrap, since the match ensures it's always a valid state
@@ -166,16 +187,16 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
 
     "accept" | "a" => {
       let mut listener = TcpListener::bind(parse_num(tokens)?, tcp_layer.get_info())?;
-      let stream = listener.accept();
+      thread::spawn(move || loop {
+        listener
+          .accept()
+          .err()
+          .map(|e| edebug!("Failed to accept, {e}"));
+      });
     }
     "connect" | "c" => {
       let (dst_ip, port) = parse_tcp_address(tokens)?;
-      match ip_layer.get_src_from_dst(dst_ip) {
-        Some(src_ip) => {
-          TcpStream::connect(tcp_layer.get_info(), dst_ip, port)?;
-        }
-        None => eprintln!("Destination ip was not reachable"),
-      }
+      TcpStream::connect(tcp_layer.get_info(), dst_ip, port)?;
     }
     "send" | "s" => {
       let (socket_id, data) = parse_send_args(tokens)?;
@@ -183,7 +204,8 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
     }
     "recv" | "r" => {
       let (socket_id, numbytes, should_block) = parse_recv_args(tokens)?;
-      let data = tcp_layer.recv(socket_id, numbytes, should_block)?;
+      let mut data = vec![0u8; numbytes];
+      tcp_layer.recv(socket_id, &mut data, should_block)?;
       println!(
         "{}",
         std::str::from_utf8(&data).unwrap_or("Not UTF8, can't print")
@@ -203,7 +225,7 @@ fn parse(tokens: Vec<String>, ip_layer: &mut IpLayer, tcp_layer: &mut TcpLayer) 
     }
     "recv_file" | "rf" => {
       let (filename, port) = parse_recv_file_args(tokens)?;
-      recv_file(filename, port)?;
+      recv_file(tcp_layer.get_info(), filename, port)?;
     }
 
     "quit" | "q" => return Ok(true),
@@ -237,7 +259,7 @@ fn run(mut ip_layer: IpLayer, mut tcp_layer: TcpLayer) -> Result<()> {
       }
     };
 
-    match parse(tokens, &mut ip_layer, &mut tcp_layer) {
+    match parse_and_run_cmd(tokens, &mut ip_layer, &mut tcp_layer) {
       Ok(false) => (),
       Ok(true) => break,
       Err(e) => eprintln!("Error: {e}"),

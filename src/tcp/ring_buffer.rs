@@ -63,7 +63,6 @@ impl RingBuffer {
 
   /// move write head
   pub fn move_write_idx(&mut self, num_bytes: usize) {
-    let l = self.len();
     let w = self.write_idx;
     let r = self.read_idx;
     let nw = self.wrapping_add(w, num_bytes);
@@ -78,7 +77,7 @@ impl RingBuffer {
     self.write_idx = nw;
   }
 
-  pub fn push(&mut self, data: &[u8]) {
+  pub fn _push(&mut self, data: &[u8]) {
     self.push_with_offset(data, 0);
   }
 
@@ -121,7 +120,7 @@ impl RingBuffer {
     self.buf.len()
   }
 
-  pub(super) fn get_raw_buf(&self) -> &[u8] {
+  pub(super) fn _get_raw_buf(&self) -> &[u8] {
     &self.buf[..self.len()]
   }
 }
@@ -133,9 +132,9 @@ mod tests {
   #[test]
   fn test_push() {
     let mut b = RingBuffer::new(5);
-    b.push(&[0, 1, 2, 3]);
+    b._push(&[0, 1, 2, 3]);
     b.move_write_idx(4);
-    assert_eq!(b.get_raw_buf().clone(), vec![0, 1, 2, 3, 0]);
+    assert_eq!(b._get_raw_buf().clone(), vec![0, 1, 2, 3, 0]);
     assert_eq!(b.write_idx, 4);
   }
 
@@ -144,15 +143,15 @@ mod tests {
     let mut b = RingBuffer::new(5);
     b.push_with_offset(&[1, 1, 1], 2);
     assert_eq!(b.write_idx, 0);
-    assert_eq!(b.get_raw_buf().clone(), vec![0, 0, 1, 1, 1]);
+    assert_eq!(b._get_raw_buf().clone(), vec![0, 0, 1, 1, 1]);
   }
 
   #[test]
   fn test_pop() {
     let mut b = RingBuffer::new(5);
-    b.push(&[0, 1, 2, 3]);
+    b._push(&[0, 1, 2, 3]);
     b.move_write_idx(4);
-    assert_eq!(b.get_raw_buf().clone(), vec![0, 1, 2, 3, 0]);
+    assert_eq!(b._get_raw_buf().clone(), vec![0, 1, 2, 3, 0]);
 
     let d = b.pop(2);
     assert_eq!(d, vec![0, 1]);
@@ -162,7 +161,7 @@ mod tests {
   #[test]
   fn test_push_full() {
     let mut b = RingBuffer::new(5);
-    b.push(&[1, 1, 1, 1, 1]);
+    b._push(&[1, 1, 1, 1, 1]);
     b.move_write_idx(5);
     assert_eq!(b.write_idx, 0);
   }
@@ -170,25 +169,25 @@ mod tests {
   #[test]
   fn test_push_overwrite() {
     let mut b = RingBuffer::new(5);
-    b.push(&[1, 1, 1]);
+    b._push(&[1, 1, 1]);
     b.move_write_idx(3);
     assert_eq!(b.write_idx, 3);
-    assert_eq!(b.get_raw_buf().clone(), vec![1, 1, 1, 0, 0]);
+    assert_eq!(b._get_raw_buf().clone(), vec![1, 1, 1, 0, 0]);
     b.pop(2);
     assert_eq!(b.read_idx, 2);
     assert_eq!(b.write_idx, 3);
-    b.push(&[2, 2, 2, 2]);
+    b._push(&[2, 2, 2, 2]);
     b.move_write_idx(4);
     assert_eq!(b.write_idx, 2);
-    assert_eq!(b.get_raw_buf().clone(), vec![2, 2, 1, 2, 2]);
+    assert_eq!(b._get_raw_buf().clone(), vec![2, 2, 1, 2, 2]);
   }
 
   #[test]
   fn test_pop_beyond_write_idx() {
     let mut b = RingBuffer::new(5);
-    b.push(&[0, 1, 2, 3]);
+    b._push(&[0, 1, 2, 3]);
     b.move_write_idx(4);
-    assert_eq!(b.get_raw_buf().clone(), vec![0, 1, 2, 3, 0]);
+    assert_eq!(b._get_raw_buf().clone(), vec![0, 1, 2, 3, 0]);
 
     let d = b.pop(6);
     assert_eq!(d, vec![0, 1, 2, 3]);
@@ -198,7 +197,7 @@ mod tests {
   #[test]
   fn test_pop_when_full() {
     let mut b = RingBuffer::new(5);
-    b.push(&[1, 1, 1, 1, 1]);
+    b._push(&[1, 1, 1, 1, 1]);
     b.move_write_idx(5);
     assert_eq!(b.write_idx, 0);
     let d = b.pop(1);
@@ -214,7 +213,7 @@ mod tests {
     let mut b = RingBuffer::new(5);
     assert!(b.empty);
 
-    b.push(&[1, 1, 1, 1, 1]);
+    b._push(&[1, 1, 1, 1, 1]);
     b.move_write_idx(5);
     assert_eq!(b.write_idx, 0);
     assert!(!b.empty);
@@ -223,7 +222,7 @@ mod tests {
     assert_eq!(d, vec![1]);
     assert_eq!(b.read_idx, 1);
 
-    b.push(&[2]);
+    b._push(&[2]);
     b.move_write_idx(1);
     assert_eq!(b.write_idx, 1);
     assert!(!b.empty);

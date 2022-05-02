@@ -123,7 +123,7 @@ impl LinkLayer {
   }
 
   /// Returns the locked state of the specified interface
-  pub fn get_state(&self, interface_id: InterfaceId) -> Result<State> {
+  pub fn _get_state(&self, interface_id: InterfaceId) -> Result<State> {
     let interfaces = self.get_interfaces();
     if interface_id >= interfaces.len() {
       Err(anyhow!("Unknown interface id"))

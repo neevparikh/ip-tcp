@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::Ipv4Addr;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
@@ -14,7 +14,7 @@ use crate::ip::{HandlerFunction, IpPacket};
 use crate::{debug, edebug};
 
 type StreamMap = Arc<RwLock<BTreeMap<SocketId, Arc<TcpStream>>>>;
-type QueuedStreamMap = Arc<Mutex<BTreeMap<SocketId, VecDeque<Arc<TcpStream>>>>>;
+type QueuedStreamMap = Arc<Mutex<BTreeMap<SocketId, (Sender<Arc<TcpStream>>, HashSet<Ipv4Addr>)>>>;
 
 const START_PORT: Port = 10000;
 
@@ -83,7 +83,6 @@ impl TcpLayerInfo {
 }
 
 pub struct TcpLayer {
-  ip_send_tx:  Sender<IpPacket>,
   tcp_recv_tx: Sender<IpTcpPacket>,
   info:        TcpLayerInfo,
 }
@@ -104,7 +103,6 @@ impl TcpLayer {
     };
 
     let tcp_layer = TcpLayer {
-      ip_send_tx: ip_send_tx.clone(),
       tcp_recv_tx,
       info: TcpLayerInfo {
         sockets_and_ports: Arc::new(Mutex::new(info)),
@@ -124,35 +122,55 @@ impl TcpLayer {
     thread::spawn(move || loop {
       match tcp_recv_rx.recv() {
         Ok((ip_header, tcp_header, data)) => {
-          let dst_port = tcp_header.destination_port;
+          let their_src_ip: Ipv4Addr = ip_header.source.into();
+          let their_dst_ip: Ipv4Addr = ip_header.destination.into();
+          let their_src_port = tcp_header.source_port;
+          let their_dst_port = tcp_header.destination_port;
+
           let streams = streams.read().unwrap();
-          let stream: Vec<_> = streams
-            .iter()
-            .filter_map(|(_, s)| {
-              if s.source_port() == dst_port {
-                Some(s)
-              } else {
-                None
-              }
-            })
-            .collect();
-          if stream.len() < 1 {
-            debug!("No matching source_port, dropping packet");
-          } else if stream.len() == 1 {
-            debug_assert_eq!(stream.len(), 1);
-            match stream[0].process((ip_header, tcp_header, data)) {
-              Ok(()) => (),
-              Err(_e) => {
-                debug!("Exiting...");
+
+          let mut stream = None;
+
+          for (_, cur_stream) in streams.iter() {
+            let our_src_ip = cur_stream.source_ip();
+            let our_src_port = cur_stream.source_port();
+            let our_dst_ip = cur_stream.destination().map(|a| a.ip());
+            let our_dst_port = cur_stream.destination().map(|a| a.port());
+
+            if our_src_port == their_dst_port && our_dst_ip.is_some() {
+              let our_dst_ip = our_dst_ip.unwrap();
+              let our_dst_port = our_dst_port.unwrap();
+              let our_src_ip = our_src_ip.unwrap();
+
+              if our_src_ip == their_dst_ip
+                && our_dst_port == their_src_port
+                && our_dst_ip == their_src_ip
+              {
+                stream = Some(cur_stream);
                 break;
+              }
+            } else if our_dst_ip.is_none() {
+              stream = Some(cur_stream)
+            }
+          }
+
+          if let Some(stream) = stream {
+            match stream.process((ip_header, tcp_header, data)) {
+              Ok(()) => (),
+              Err(e) => {
+                debug!(
+                  "Stream {} process failed with {e}, closing stream...",
+                  stream.socket_id()
+                );
+                stream.close().unwrap_or_else(|e| debug!("{e}"));
               }
             }
           } else {
-            panic!("Fatal: Duplicate streams for the same port!");
+            debug!("No matching source_port, dropping packet");
           }
         }
         Err(_e) => {
-          debug!("Exiting...");
+          debug!("Exiting stream dispatcher...");
           break;
         }
       }
@@ -199,7 +217,7 @@ impl TcpLayer {
   pub fn print_window(&self, socket_id: SocketId) {
     let streams = self.info.streams.read().unwrap();
     match streams.get(&socket_id) {
-      Some(stream) => println!("Window size: {}", stream.get_window_size()),
+      Some(stream) => println!("Window size: {}", stream.window_size()),
       None => eprintln!("Unknown socket_id: {socket_id}"),
     }
   }
@@ -216,10 +234,10 @@ impl TcpLayer {
     }
   }
 
-  pub fn recv(&self, socket_id: SocketId, numbytes: usize, should_block: bool) -> Result<Vec<u8>> {
+  pub fn recv(&self, socket_id: SocketId, data: &mut [u8], should_block: bool) -> Result<usize> {
     let streams = self.info.streams.read().unwrap();
     match streams.get(&socket_id) {
-      Some(stream) => Ok(stream.recv(numbytes, should_block)?),
+      Some(stream) => Ok(stream.recv(data, should_block)?),
       None => Err(anyhow!("Unknown socket_id: {socket_id}")),
     }
   }
@@ -258,6 +276,17 @@ impl TcpLayer {
 
     if let Err(e) = stream.close() {
       debug!("Error: {e}")
+    }
+  }
+}
+
+impl Drop for TcpLayer {
+  fn drop(&mut self) {
+    let streams = self.info.streams.read().unwrap();
+    for (socket_id, stream) in streams.iter() {
+      stream
+        .close()
+        .unwrap_or_else(|e| edebug!("Failed to close stream {socket_id}, {e}"));
     }
   }
 }

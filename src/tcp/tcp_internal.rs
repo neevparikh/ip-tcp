@@ -5,10 +5,12 @@ use anyhow::Result;
 use etherparse::{Ipv4Header, TcpHeader};
 
 use super::{
-  Port, TcpStreamState, VALID_ACK_STATES, VALID_FIN_STATES, VALID_SEND_STATES, VALID_SYN_STATES,
+  Port, SocketId, TcpStreamState, VALID_ACK_STATES, VALID_FIN_STATES, VALID_SEND_STATES,
+  VALID_SYN_STATES,
 };
 use crate::ip::{IpPacket, Protocol};
 
+#[derive(Debug)]
 pub struct TcpStreamInternal {
   pub source_ip:               Option<Ipv4Addr>,
   /// Constant properties of the stream
@@ -28,6 +30,7 @@ pub struct TcpStreamInternal {
 
   /// state
   pub state:      TcpStreamState,
+  pub socket_id:  SocketId,
   pub ip_send_tx: Sender<IpPacket>,
 }
 
