@@ -113,7 +113,7 @@ impl RingBuffer {
         let s = size.min(available);
         let rem = s - first; // can't overflow, bc s > first
         data[..(l - r)].copy_from_slice(&self.buf[r..l]);
-        data[(l - r)..].copy_from_slice(&self.buf[..rem]);
+        data[(l - r)..s].copy_from_slice(&self.buf[..rem]);
         self.read_idx = rem;
         s
       }
