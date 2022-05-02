@@ -113,9 +113,9 @@ impl SendBuffer {
         starting_sequence:   first_seq,
         elems:               VecDeque::with_capacity(MAX_WINDOW_SIZE),
         bytes_in_window:     0usize,
-        max_size:            MTU * 5, // TODO: what should this be to start
-        recv_window_size:    0,       /* This will be initialized when we receive
-                                       * SYNACK/ACK */
+        max_size:            MTU * 1,
+        recv_window_size:    0, /* This will be initialized when we receive
+                                 * SYNACK/ACK */
         zero_window_probing: false,
         srtt:                INITIAL_SRTT,
       })),
@@ -793,7 +793,7 @@ mod test {
     recv_data(&send_thread_rx, 1, &data[0..MTU]);
     recv_retry(&send_thread_rx, 1, &data[0..MTU], send_buf._rto());
     assert!(send_buf.handle_ack((MTU as u32) + 1, MTU as u16).is_ok());
-    // TODO: can't really test that the next chunk is appropriately sent due to zero window
+    // NOTE: can't really test that the next chunk is appropriately sent due to zero window
     // probing
   }
 

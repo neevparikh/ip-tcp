@@ -47,10 +47,16 @@ impl RingBuffer {
     let e = if e == l { l } else { e % l };
     let r = self.read_idx;
 
-    if !self.empty {
-      debug_assert!(!(s <= r && e > r) && !(s >= e && e > r));
-    } else {
-      debug_assert!(!(s < r && e > r) && !(s >= e && e > r));
+    if cfg!(debug_assertions) {
+      let cond = if !self.empty {
+        !(s <= r && e > r) && !(s >= e && e > r)
+      } else {
+        !(s < r && e > r) && !(s >= e && e > r)
+      };
+      if !cond {
+        dbg!(s, e, r, offset, size, l, self.empty);
+        panic!("Overwrote read head, this should have never happened");
+      }
     }
 
     if s <= e {

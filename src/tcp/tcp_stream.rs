@@ -345,7 +345,7 @@ impl TcpStream {
         Ok(())
       }
       TcpStreamState::SynReceived => {
-        // TODO: If no SENDs have been issued and there is no pending data to send,
+        // If no SENDs have been issued and there is no pending data to send,
         // then form a FIN segment and send it, and enter FIN-WAIT-1 state;
         // otherwise queue for processing after entering ESTABLISHED state.
         drop(internal);

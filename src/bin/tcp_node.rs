@@ -38,7 +38,10 @@ fn send_file(info: TcpLayerInfo, filename: String, dst_ip: Ipv4Addr, port: Port)
     stream.send(&buf[0..n]).unwrap();
   }
   stream.close()?;
-  println!("Time: {}", Instant::now().duration_since(now).as_millis());
+  println!(
+    "Time: {} ms",
+    Instant::now().duration_since(now).as_millis()
+  );
   Ok(())
 }
 
@@ -46,6 +49,7 @@ fn recv_file(info: TcpLayerInfo, filename: String, port: Port) -> Result<()> {
   let mut f = File::create(filename)?;
   let mut listener = TcpListener::bind(port, info)?;
   let stream = listener.accept()?;
+  edebug!("Closing listener");
   listener.close()?;
   let mut buf = [0u8; 2usize.pow(14)];
 
@@ -59,7 +63,10 @@ fn recv_file(info: TcpLayerInfo, filename: String, port: Port) -> Result<()> {
       }
     }
   }
-  println!("Time: {}", Instant::now().duration_since(now).as_millis());
+  println!(
+    "Time: {} ms",
+    Instant::now().duration_since(now).as_millis()
+  );
   Ok(())
 }
 

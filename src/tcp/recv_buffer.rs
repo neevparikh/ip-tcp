@@ -35,67 +35,72 @@ pub(super) struct RecvBuffer {
 }
 
 impl WindowData {
-  fn get_interval_between(&self, s: u32, e: u32) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
-    let l = self.left;
-    let r = self.right;
-    if s > e {
-      if l <= r {
+  fn get_interval_between(
+    &self,
+    requested_start: u32,
+    requested_end: u32,
+  ) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
+    let window_left = self.left;
+    let window_right = self.right;
+    if requested_start > requested_end {
+      dbg!("wrapping", requested_start, requested_end);
+      if window_left <= window_right {
         return (Vec::new(), Vec::new()); // can never have anything within window
       }
       let starts: Vec<_> = self
         .starts
-        .range(s..)
+        .range(requested_start..)
         .into_iter()
-        .chain(self.starts.range(..=e).into_iter())
-        .filter_map(|(&st, &en)| {
-          if st > en {
-            if st < l || en > r {
+        .chain(self.starts.range(..=requested_end).into_iter())
+        .filter_map(|(&cur_start, &cur_end)| {
+          if cur_start > cur_end {
+            if cur_start < window_left || cur_end > window_right {
               None
-            } else if st >= l && en > r {
-              Some((st, r))
-            } else if st < l && en <= r {
-              Some((l, en))
+            } else if cur_start >= window_left && cur_end > window_right {
+              Some((cur_start, window_right))
+            } else if cur_start < window_left && cur_end <= window_right {
+              Some((window_left, cur_end))
             } else {
-              Some((st, en))
+              Some((cur_start, cur_end))
             }
           } else {
-            if en <= l && st > r {
+            if cur_end <= window_left && cur_start > window_right {
               None
-            } else if st <= l && en > l {
-              Some((l, en))
-            } else if st < r && en >= r {
-              Some((st, r))
+            } else if cur_start <= window_left && cur_end > window_left {
+              Some((window_left, cur_end))
+            } else if cur_start < window_right && cur_end >= window_right {
+              Some((cur_start, window_right))
             } else {
-              Some((st, en))
+              Some((cur_start, cur_end))
             }
           }
         })
         .collect();
       let ends = self
         .ends
-        .range(s..)
+        .range(requested_start..)
         .into_iter()
-        .chain(self.ends.range(..e).into_iter())
-        .filter_map(|(&en, &st)| {
-          if st > en {
-            if st < l || en > r {
+        .chain(self.ends.range(..requested_end).into_iter())
+        .filter_map(|(&cur_end, &cur_start)| {
+          if cur_start > cur_end {
+            if cur_start < window_left || cur_end > window_right {
               None
-            } else if st >= l && en > r {
-              Some((r, st))
-            } else if st < l && en <= r {
-              Some((en, l))
+            } else if cur_start >= window_left && cur_end > window_right {
+              Some((window_right, cur_start))
+            } else if cur_start < window_left && cur_end <= window_right {
+              Some((cur_end, window_left))
             } else {
-              Some((en, st))
+              Some((cur_end, cur_start))
             }
           } else {
-            if en <= l && st > r {
+            if cur_end <= window_left && cur_start > window_right {
               None
-            } else if st <= l && en > l {
-              Some((en, l))
-            } else if st < r && en >= r {
-              Some((r, st))
+            } else if cur_start <= window_left && cur_end > window_left {
+              Some((cur_end, window_left))
+            } else if cur_start < window_right && cur_end >= window_right {
+              Some((window_right, cur_start))
             } else {
-              Some((en, st))
+              Some((cur_end, cur_start))
             }
           }
         })
@@ -104,33 +109,37 @@ impl WindowData {
     } else {
       let starts: Vec<_> = self
         .starts
-        .range(s..=e)
+        .range(..=requested_end)
         .into_iter()
-        .filter_map(|(&st, &en)| {
-          if en <= l || st > r {
+        .filter_map(|(&cur_start, &cur_end)| {
+          if cur_end <= window_left || cur_start > window_right {
             None
-          } else if st <= l && en > l {
-            Some((l, en))
-          } else if st < r && en >= r {
-            Some((st, r))
+          } else if cur_end < requested_start {
+            None
+          } else if cur_start <= window_left && cur_end > window_left {
+            Some((window_left, cur_end))
+          } else if cur_start < window_right && cur_end >= window_right {
+            Some((cur_start, window_right))
           } else {
-            Some((st, en))
+            Some((cur_start, cur_end))
           }
         })
         .collect();
       let ends = self
         .ends
-        .range(s..e)
+        .range(requested_start..)
         .into_iter()
-        .filter_map(|(&en, &st)| {
-          if en <= l || st > r {
+        .filter_map(|(&cur_end, &cur_start)| {
+          if cur_end <= window_left || cur_start > window_right {
             None
-          } else if st <= l && en > l {
-            Some((en, l))
-          } else if st < r && en >= r {
-            Some((r, st))
+          } else if cur_start > requested_end {
+            None
+          } else if cur_start <= window_left && cur_end > window_left {
+            Some((cur_end, window_left))
+          } else if cur_start < window_right && cur_end >= window_right {
+            Some((window_right, cur_start))
           } else {
-            Some((en, st))
+            Some((cur_end, cur_start))
           }
         })
         .collect();
@@ -278,7 +287,7 @@ impl RecvBuffer {
       (has_l, has_r)
     } else {
       let has_l = (win.left..win.right).contains(&seg_l);
-      let has_r = (win.left..win.right).contains(&seg_r);
+      let has_r = (win.left..win.right).contains(&seg_r.wrapping_sub(1));
       (has_l, has_r)
     };
 
@@ -304,8 +313,20 @@ impl RecvBuffer {
       );
       Some(win.handle_interval(win.left, seg_r))
     } else {
-      debug!("Dropping packet, outside of window");
-      return Ok(());
+      debug!(
+        "Dropping packet {seq_num}, outside of window {}..{}, sending ack {}",
+        win.left, win.right, win.current_ack
+      );
+      if let Err(_) = self.stream_send_tx.send(StreamSendThreadMsg::Ack(
+        win.current_ack,
+        self.window_size(),
+      )) {
+        return Err(anyhow!(
+          "Could not send message to tcp_stream via stream_send_tx..."
+        ));
+      } else {
+        return Ok(());
+      }
     } {
       let wrap = interval_r < interval_l;
       if interval_l == win.left
@@ -327,7 +348,6 @@ impl RecvBuffer {
       win.current_ack,
       self.window_size(),
     )) {
-      edebug!("Could not send message to tcp_stream via stream_send_tx...");
       Err(anyhow!(
         "Could not send message to tcp_stream via stream_send_tx..."
       ))
