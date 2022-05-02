@@ -41,7 +41,6 @@ fn send_file(
   loop {
     let n = f.read(&mut buf)?;
     if n == 0 {
-      println!("Sending file finished");
       break;
     }
     match stream.send(&buf[0..n]) {
@@ -125,11 +124,6 @@ fn parse_congestion_control(token: Option<&str>) -> Result<CongestionControlStra
   }
 }
 
-fn parse_tcp_address(tokens: Vec<String>) -> Result<(Ipv4Addr, Port)> {
-  check_len_ge(&tokens, 2)?;
-  Ok((tokens[1].parse()?, tokens[2].parse()?))
-}
-
 fn parse_connect_args(tokens: Vec<String>) -> Result<(Ipv4Addr, Port, CongestionControlStrategy)> {
   check_len_ge(&tokens, 2)?;
   let congestion_control = if tokens.len() > 3 {
@@ -200,39 +194,39 @@ fn help_msg(bad_cmd: Option<&str>) {
   }
   eprintln!(
     "Commands:
-a, accept <port>                          - Spawn a socket, bind it to the given port,
-                                            and start accepting connections on that port.
-c, connect <ip> <port>                    - Attempt to connect to the given ip address,
-                                            in dot notation, on the given port.
-s, send <socket> <data>                   - Send a string on a socket.
-r, recv <socket> <numbytes> [y|n]         - Try to read data from a given socket. If
-                                            the last argument is y, then you should
-                                            block until numbytes is received, or the
-                                            connection closes. If n, then don't block;
-                                            return whatever recv returns. Default is n.
-sd, shutdown <socket> [read|write|both]   - v_shutdown on the given socket.
-cl, close <socket>                        - v_close on the given socket.
+a, accept <port>                            - Spawn a socket, bind it to the given port,
+                                              and start accepting connections on that port.
+c, connect <ip> <port>                      - Attempt to connect to the given ip address,
+                                              in dot notation, on the given port.
+s, send <socket> <data>                     - Send a string on a socket.
+r, recv <socket> <numbytes> [y|n]           - Try to read data from a given socket. If
+                                              the last argument is y, then you should
+                                              block until numbytes is received, or the
+                                              connection closes. If n, then don't block;
+                                              return whatever recv returns. Default is n.
+sd, shutdown <socket> [read|write|both]     - v_shutdown on the given socket.
+cl, close <socket>                          - v_close on the given socket.
 
 
-sf, send_file <filename> <ip> <port>      - Connect to the given ip and port, send the
+sf, send_file <filename> <ip> <port> [reno] - Connect to the given ip and port, send the
                                             entirety of the specified file, and close
                                             the connection.
-rf, recv_file <filename> <port>           - Listen for a connection on the given port.
-                                            Once established, write everything you can
-                                            read from the socket to the given file.
-                                            Once the other side closes the connection,
-                                            close the connection as well.
+rf, recv_file <filename> <port>             - Listen for a connection on the given port.
+                                              Once established, write everything you can
+                                              read from the socket to the given file.
+                                              Once the other side closes the connection,
+                                              close the connection as well.
 
-li, interfaces                            - list interfaces
-lr, routes                                - list routing table rows
-ls, sockets                               - list sockets (fd, ip, port, state)
-lw, window <socket>                       - lists window sizes for socket
+li, interfaces                              - list interfaces
+lr, routes                                  - list routing table rows
+ls, sockets                                 - list sockets (fd, ip, port, state)
+lw, window <socket>                         - lists window sizes for socket
 
-up <id>                                   - enable interface with id
-down <id>                                 - disable interface with id
+up <id>                                     - enable interface with id
+down <id>                                   - disable interface with id
 
-q, quit                                   - exit
-h, help                                   - show this help"
+q, quit                                     - exit
+h, help                                     - show this help"
   )
 }
 

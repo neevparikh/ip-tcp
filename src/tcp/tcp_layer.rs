@@ -7,7 +7,6 @@ use std::thread;
 use anyhow::{anyhow, Result};
 use etherparse::{Ipv4Header, TcpHeader};
 
-use super::send_buffer::CongestionControlStrategy;
 use super::socket::{SocketId, SocketSide};
 use super::tcp_stream::TcpStream;
 use super::{IpTcpPacket, Port, TcpStreamState};
