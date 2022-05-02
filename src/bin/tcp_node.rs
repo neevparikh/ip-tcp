@@ -11,7 +11,10 @@ use clap::Parser;
 use ip_tcp::edebug;
 use ip_tcp::ip::{IpLayer, Protocol};
 use ip_tcp::misc::lnx_config::LnxConfig;
-use ip_tcp::tcp::{Port, SocketId, SocketSide, TcpLayer, TcpLayerInfo, TcpListener, TcpStream};
+use ip_tcp::tcp::{
+  CongestionControlInfo, CongestionControlStrategy, Port, SocketId, SocketSide, TcpLayer,
+  TcpLayerInfo, TcpListener, TcpStream,
+};
 use shellwords;
 
 #[derive(Parser, Debug)]
@@ -22,11 +25,17 @@ pub struct Args {
   lnx_filename: String,
 }
 
-fn send_file(info: TcpLayerInfo, filename: String, dst_ip: Ipv4Addr, port: Port) -> Result<()> {
+fn send_file(
+  info: TcpLayerInfo,
+  filename: String,
+  dst_ip: Ipv4Addr,
+  port: Port,
+  congestion_control: CongestionControlStrategy,
+) -> Result<()> {
   let mut f = File::open(filename)?;
   let mut buf = [0u8; 2usize.pow(14)];
 
-  let stream = TcpStream::connect(info, dst_ip, port)?;
+  let stream = TcpStream::connect(info, dst_ip, port, congestion_control)?;
 
   let now = Instant::now();
   loop {
@@ -35,7 +44,10 @@ fn send_file(info: TcpLayerInfo, filename: String, dst_ip: Ipv4Addr, port: Port)
       println!("Sending file finished");
       break;
     }
-    stream.send(&buf[0..n]).unwrap();
+    match stream.send(&buf[0..n]) {
+      Ok(_) => (),
+      Err(e) => eprintln!("Send errored {e}"),
+    }
   }
   stream.close()?;
   println!(
@@ -82,6 +94,19 @@ fn check_len(tokens: &[String], expected: usize) -> Result<()> {
   }
 }
 
+/// Checks whether len is >= expected
+fn check_len_ge(tokens: &[String], expected: usize) -> Result<()> {
+  if tokens.len() < expected + 1 {
+    Err(anyhow!(
+      "'{}' expected at least {expected} argument(s) received {}",
+      tokens[0],
+      tokens.len() - 1
+    ))
+  } else {
+    Ok(())
+  }
+}
+
 fn parse_num<T: FromStr>(tokens: Vec<String>) -> Result<T> {
   check_len(&tokens, 1)?;
   tokens[1]
@@ -89,9 +114,30 @@ fn parse_num<T: FromStr>(tokens: Vec<String>) -> Result<T> {
     .map_err(|_| anyhow!("single arg must be {}", type_name::<T>()))
 }
 
+fn parse_congestion_control(token: Option<&str>) -> Result<CongestionControlStrategy> {
+  match token {
+    Some(token) => match token {
+      "reno" => Ok(CongestionControlStrategy::Reno(CongestionControlInfo::new())),
+      "none" => Ok(CongestionControlStrategy::No),
+      _ => Err(anyhow!("Unknown congestion control stategy {token}")),
+    },
+    None => Ok(CongestionControlStrategy::No),
+  }
+}
+
 fn parse_tcp_address(tokens: Vec<String>) -> Result<(Ipv4Addr, Port)> {
-  check_len(&tokens, 2)?;
+  check_len_ge(&tokens, 2)?;
   Ok((tokens[1].parse()?, tokens[2].parse()?))
+}
+
+fn parse_connect_args(tokens: Vec<String>) -> Result<(Ipv4Addr, Port, CongestionControlStrategy)> {
+  check_len_ge(&tokens, 2)?;
+  let congestion_control = if tokens.len() > 3 {
+    parse_congestion_control(Some(&tokens[3].as_str()))?
+  } else {
+    parse_congestion_control(None)?
+  };
+  Ok((tokens[1].parse()?, tokens[2].parse()?, congestion_control))
 }
 
 fn parse_send_args(tokens: Vec<String>) -> Result<(SocketId, Vec<u8>)> {
@@ -126,9 +172,21 @@ fn parse_shutdown_args(tokens: Vec<String>) -> Result<(SocketId, SocketSide)> {
   Ok((tokens[1].parse()?, side))
 }
 
-fn parse_send_file_args(tokens: Vec<String>) -> Result<(String, Ipv4Addr, Port)> {
-  check_len(&tokens, 3)?;
-  Ok((tokens[1].parse()?, tokens[2].parse()?, tokens[3].parse()?))
+fn parse_send_file_args(
+  tokens: Vec<String>,
+) -> Result<(String, Ipv4Addr, Port, CongestionControlStrategy)> {
+  check_len_ge(&tokens, 3)?;
+  let congestion_control = if tokens.len() > 4 {
+    parse_congestion_control(Some(&tokens[4].as_str()))?
+  } else {
+    parse_congestion_control(None)?
+  };
+  Ok((
+    tokens[1].parse()?,
+    tokens[2].parse()?,
+    tokens[3].parse()?,
+    congestion_control,
+  ))
 }
 
 fn parse_recv_file_args(tokens: Vec<String>) -> Result<(String, Port)> {
@@ -203,8 +261,8 @@ fn parse_and_run_cmd(
       });
     }
     "connect" | "c" => {
-      let (dst_ip, port) = parse_tcp_address(tokens)?;
-      TcpStream::connect(tcp_layer.get_info(), dst_ip, port)?;
+      let (dst_ip, port, congestion_control) = parse_connect_args(tokens)?;
+      TcpStream::connect(tcp_layer.get_info(), dst_ip, port, congestion_control)?;
     }
     "send" | "s" => {
       let (socket_id, data) = parse_send_args(tokens)?;
@@ -228,10 +286,10 @@ fn parse_and_run_cmd(
     }
 
     "send_file" | "sf" => {
-      let (filename, ip, port) = parse_send_file_args(tokens)?;
+      let (filename, ip, port, congestion_control) = parse_send_file_args(tokens)?;
       let info = tcp_layer.get_info();
       thread::spawn(move || {
-        send_file(info, filename, ip, port).unwrap_or_else(|e| eprintln!("{e}"))
+        send_file(info, filename, ip, port, congestion_control).unwrap_or_else(|e| eprintln!("{e}"))
       });
     }
     "recv_file" | "rf" => {

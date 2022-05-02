@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::Ipv4Addr;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
 use anyhow::{anyhow, Result};
 use etherparse::{Ipv4Header, TcpHeader};
 
+use super::send_buffer::CongestionControlStrategy;
 use super::socket::{SocketId, SocketSide};
 use super::tcp_stream::TcpStream;
 use super::{IpTcpPacket, Port, TcpStreamState};
@@ -108,7 +109,7 @@ impl TcpLayer {
 
 impl TcpLayer {
   pub fn new(ip_send_tx: Sender<IpPacket>, our_ip_addrs: HashSet<Ipv4Addr>) -> TcpLayer {
-    let (tcp_recv_tx, tcp_recv_rx) = channel();
+    let (tcp_recv_tx, tcp_recv_rx) = mpsc::channel(); // magic number
 
     let info = SocketPortAvailablity {
       next_socket_id: 0,
@@ -201,7 +202,7 @@ impl TcpLayer {
         Ok((tcp_header, data)) => match tcp_recv_tx.send((ip_header, tcp_header, data.to_vec())) {
           Ok(()) => (),
           Err(e) => {
-            edebug!("Error parsing TCP packet: {e}");
+            eprintln!("Error parsing TCP packet: {e}");
             return;
           }
         },

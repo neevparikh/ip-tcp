@@ -19,12 +19,44 @@ const SRTT_ALPHA: f32 = 0.8f32;
 const INITIAL_SRTT: Duration = Duration::from_millis(1500);
 const ZERO_WINDOW_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
+const SEND_BUFFER_MAX_WINDOW_SIZE: usize = 32 * MTU;
 
 #[derive(Debug, PartialEq)]
 enum WindowElementType {
   Data,
   Syn,
   Fin,
+}
+
+#[derive(Debug)]
+pub enum CongestionControlStrategy {
+  No,
+  Reno(CongestionControlInfo),
+}
+
+#[derive(Debug)]
+pub struct CongestionControlInfo {
+  pub curr_start:          u32,
+  pub curr_window_size:    usize,
+  /// used for detecting dup acks
+  pub last_ack:            u32,
+  pub dup_ack_count:       u8,
+  pub ssthresh:            usize,
+  pub drop_in_curr_window: bool,
+}
+
+impl CongestionControlInfo {
+  pub fn new() -> CongestionControlInfo {
+    CongestionControlInfo {
+      /// This is initialized in SendBuffer::new()
+      curr_start:          0u32,
+      curr_window_size:    MTU,
+      last_ack:            0u32,
+      dup_ack_count:       0u8,
+      ssthresh:            usize::max_value(),
+      drop_in_curr_window: false,
+    }
+  }
 }
 
 #[derive(Debug, PartialEq)]
@@ -63,6 +95,7 @@ struct SendWindow {
   pub bytes_in_window:     usize,
   /// max_size is the max we are willing to send
   pub max_size:            usize,
+  pub congestion_control:  CongestionControlStrategy,
   /// recv_window_size is the max they are willing to recveive
   pub recv_window_size:    u16,
   pub zero_window_probing: bool,
@@ -94,11 +127,20 @@ impl SendBuffer {
   pub fn new(
     stream_send_tx: Sender<StreamSendThreadMsg>,
     initial_sequence_number: u32,
+    mut congestion_control: CongestionControlStrategy,
   ) -> SendBuffer {
     let (wake_send_thread_tx, wake_send_thread_rx) = mpsc::channel();
     let (wake_timeout_thread_tx, wake_timeout_thread_rx) = mpsc::channel();
     let first_seq = initial_sequence_number.wrapping_add(1);
     let state_pair = Arc::new((Mutex::new(SendBufferState::Init), Condvar::new()));
+    let initial_max_size = match &mut congestion_control {
+      CongestionControlStrategy::No => MTU * 5,
+      CongestionControlStrategy::Reno(info) => {
+        info.last_ack = initial_sequence_number;
+        info.curr_start = initial_sequence_number;
+        MTU
+      }
+    };
     let buf = SendBuffer {
       state_pair: state_pair.clone(),
 
@@ -110,14 +152,16 @@ impl SendBuffer {
       buf_cond: Arc::new(Condvar::new()),
 
       window: Arc::new(RwLock::new(SendWindow {
-        starting_sequence:   first_seq,
-        elems:               VecDeque::with_capacity(MAX_WINDOW_SIZE),
-        bytes_in_window:     0usize,
-        max_size:            MTU * 1,
-        recv_window_size:    0, /* This will be initialized when we receive
-                                 * SYNACK/ACK */
+        starting_sequence: first_seq,
+        elems: VecDeque::with_capacity(MAX_WINDOW_SIZE),
+        bytes_in_window: 0usize,
+        max_size: initial_max_size,
+        congestion_control,
+
+        recv_window_size: 0, /* This will be initialized when we receive
+                              * SYNACK/ACK */
         zero_window_probing: false,
-        srtt:                INITIAL_SRTT,
+        srtt: INITIAL_SRTT,
       })),
 
       wake_send_thread_tx: Arc::new(Mutex::new(wake_send_thread_tx.clone())),
@@ -161,11 +205,13 @@ impl SendBuffer {
 
   pub fn handle_ack(&self, ack_num: u32, window_size: u16) -> Result<()> {
     let mut window = self.window.write().unwrap();
-    let bytes_acked = window.handle_ack(ack_num, window_size);
+    let (bytes_acked, fast_retry) = window.handle_ack(ack_num, window_size);
 
     if bytes_acked > 0u32 {
       self.buf.lock().unwrap().ack(bytes_acked);
       self.buf_cond.notify_all();
+      self.wake_send_thread()?;
+    } else if fast_retry {
       self.wake_send_thread()?;
     };
     Ok(())
@@ -371,6 +417,7 @@ impl SendBuffer {
       let rto = window.rto();
 
       let mut sent_retry = false;
+      let mut retried = false;
       for elem in window.elems.iter_mut() {
         if elem.time_to_retry <= now && !sent_retry {
           sent_retry = true;
@@ -378,6 +425,7 @@ impl SendBuffer {
             WindowElementType::Syn => stream_send_tx.send(StreamSendThreadMsg::Syn),
             WindowElementType::Data => {
               debug!("Sending retry");
+              retried = true;
               stream_send_tx.send(StreamSendThreadMsg::Outgoing(
                 curr_seq,
                 Vec::from_iter(buf.read(curr_seq, elem.size as usize).copied()),
@@ -403,6 +451,13 @@ impl SendBuffer {
           elem.time_to_retry = now + (rto * 2u32.pow(elem.num_retries as u32));
         }
         curr_seq = curr_seq.wrapping_add(elem.size);
+      }
+
+      match &mut window.congestion_control {
+        CongestionControlStrategy::No => (),
+        CongestionControlStrategy::Reno(info) => {
+          info.drop_in_curr_window |= retried;
+        }
       }
 
       let mut distance_to_end = match buf.dist_to_end_from_seq(curr_seq) {
@@ -512,7 +567,64 @@ impl SendWindow {
   }
 
   /// Returns the number of bytes popped off of the window
-  pub fn handle_ack(&mut self, ack_num: u32, window_size: u16) -> u32 {
+  /// bool is whether to fast retry
+  pub fn handle_ack(&mut self, ack_num: u32, window_size: u16) -> (u32, bool) {
+    let starting_sequence = self.starting_sequence;
+    let mut fast_retry = false;
+    match &mut self.congestion_control {
+      CongestionControlStrategy::No => (),
+      CongestionControlStrategy::Reno(info) => {
+        if ack_num == info.last_ack {
+          if info.dup_ack_count == 3 {
+            info.curr_window_size /= 2;
+            info.curr_window_size = info.curr_window_size.max(MTU);
+            fast_retry = true;
+            info.dup_ack_count += 1;
+          } else {
+            info.dup_ack_count += 1;
+          }
+        } else {
+          info.last_ack = ack_num;
+          info.dup_ack_count = 0;
+        }
+
+        if ack_num >= info.curr_start.wrapping_add(info.curr_window_size as u32) {
+          info.curr_start = ack_num;
+          if info.drop_in_curr_window {
+            if info.curr_window_size != MTU {
+              info.ssthresh = info.curr_window_size / 2;
+            }
+            info.curr_window_size = MTU;
+          } else {
+            if info.curr_window_size < info.ssthresh {
+              info.curr_window_size *= 2;
+              info.curr_window_size = info.curr_window_size.min(SEND_BUFFER_MAX_WINDOW_SIZE);
+              self.max_size = info.curr_window_size;
+            } else {
+              info.curr_window_size += MTU;
+              self.max_size += MTU;
+            }
+          }
+          info.drop_in_curr_window = false;
+        }
+
+        self.max_size = info
+          .curr_start
+          .wrapping_add(info.curr_window_size as u32)
+          .wrapping_sub(starting_sequence) as usize;
+      }
+    }
+
+    if fast_retry {
+      match self.elems.get_mut(0) {
+        Some(elem) => {
+          self.starting_sequence;
+          elem.time_to_retry = Instant::now() - Duration::from_secs(10);
+        }
+        None => (),
+      }
+    }
+
     self.recv_window_size = window_size;
     let window_start = self.starting_sequence;
     let window_end = window_start.wrapping_add(self.bytes_in_window.try_into().unwrap());
@@ -523,9 +635,9 @@ impl SendWindow {
         self.zero_window_probing = false;
         // zero window probe byte not in window
         self.starting_sequence += 1;
-        return 1u32;
+        return (1u32, fast_retry);
       }
-      return 0u32;
+      return (0u32, fast_retry);
     }
 
     let bytes_acked = ack_num.wrapping_sub(window_start);
@@ -562,7 +674,7 @@ impl SendWindow {
 
     self.starting_sequence += bytes_popped;
     self.bytes_in_window -= bytes_popped as usize;
-    return bytes_popped;
+    return (bytes_popped, fast_retry);
   }
 }
 
@@ -625,7 +737,7 @@ mod test {
 
   fn setup() -> (SendBuffer, Receiver<StreamSendThreadMsg>) {
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
-    let buf = SendBuffer::new(send_thread_tx.clone(), 0);
+    let buf = SendBuffer::new(send_thread_tx.clone(), 0, CongestionControlStrategy::No);
     *buf.state_pair.0.lock().unwrap() = SendBufferState::Ready;
     let _ = buf.handle_ack(0, u16::max_value());
     (buf, send_thread_rx)
@@ -633,7 +745,11 @@ mod test {
 
   fn setup_initial_seq(initial_seq: u32) -> (SendBuffer, Receiver<StreamSendThreadMsg>) {
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
-    let buf = SendBuffer::new(send_thread_tx.clone(), initial_seq);
+    let buf = SendBuffer::new(
+      send_thread_tx.clone(),
+      initial_seq,
+      CongestionControlStrategy::No,
+    );
     *buf.state_pair.0.lock().unwrap() = SendBufferState::Ready;
     buf.handle_ack(initial_seq, u16::max_value()).unwrap();
     (buf, send_thread_rx)

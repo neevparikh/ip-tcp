@@ -11,6 +11,7 @@ mod tcp_layer;
 mod tcp_listener;
 mod tcp_stream;
 
+pub use send_buffer::{CongestionControlInfo, CongestionControlStrategy};
 pub use socket::{SocketId, SocketSide};
 pub use tcp_layer::{TcpLayer, TcpLayerInfo};
 pub use tcp_listener::TcpListener;

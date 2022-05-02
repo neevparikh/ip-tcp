@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use etherparse::TcpHeader;
 
 use super::recv_buffer::RecvBuffer;
-use super::send_buffer::SendBuffer;
+use super::send_buffer::{CongestionControlStrategy, SendBuffer};
 use super::tcp_internal::TcpStreamInternal;
 use super::{
   IpTcpPacket, Port, SocketId, TcpLayerInfo, TcpStreamState, MAX_SEGMENT_LIFETIME, MAX_WINDOW_SIZE,
@@ -99,6 +99,7 @@ impl TcpStream {
     cleanup: Box<dyn Fn() + Send>,
     socket_id: SocketId,
     info: TcpLayerInfo,
+    congestion_control: CongestionControlStrategy,
   ) -> TcpStream {
     let (stream_tx, stream_rx) = mpsc::channel();
     let (send_thread_tx, send_thread_rx) = mpsc::channel();
@@ -127,6 +128,7 @@ impl TcpStream {
     let send_buffer = Arc::new(SendBuffer::new(
       send_thread_tx.clone(),
       initial_sequence_number,
+      congestion_control,
     ));
 
     TcpStream::start_listen_thread(
@@ -177,6 +179,8 @@ impl TcpStream {
           info.make_cleanup_callback(new_socket),
           new_socket,
           info.clone(),
+          CongestionControlStrategy::No, /* for now we only want congestion control on the
+                                          * client side */
         ));
         let mut internal = stream.internal.lock().unwrap();
         internal.set_destination_or_check(dst_ip, dst_port);
@@ -221,6 +225,7 @@ impl TcpStream {
         info.make_cleanup_callback(new_socket),
         new_socket,
         info.clone(),
+        CongestionControlStrategy::No,
       ));
       info
         .streams
@@ -233,7 +238,12 @@ impl TcpStream {
   }
 
   /// Create a regular socket, connecting to a dst_ip:dst_port addr
-  pub fn connect(info: TcpLayerInfo, dst_ip: Ipv4Addr, dst_port: Port) -> Result<Arc<TcpStream>> {
+  pub fn connect(
+    info: TcpLayerInfo,
+    dst_ip: Ipv4Addr,
+    dst_port: Port,
+    congestion_control: CongestionControlStrategy,
+  ) -> Result<Arc<TcpStream>> {
     let mut sockets_and_ports = info.sockets_and_ports.lock().unwrap();
     let src_port = sockets_and_ports.get_new_port();
     let ip_send_tx = info.ip_send_tx.clone();
@@ -252,6 +262,7 @@ impl TcpStream {
       info.make_cleanup_callback(new_socket),
       new_socket,
       info.clone(),
+      congestion_control,
     ));
 
     info
