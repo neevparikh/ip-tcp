@@ -82,38 +82,40 @@ impl RingBuffer {
   }
 
   /// Returns as much data as possible, up until reaching write_idx.
-  pub fn pop(&mut self, size: usize) -> Vec<u8> {
+  pub fn pop(&mut self, data: &mut [u8]) -> usize {
+    let size = data.len();
     let l = self.len();
     let w = self.write_idx;
     let r = self.read_idx;
-    let data = if self.empty && r == w {
-      Vec::new()
+    let bytes_read = if self.empty && r == w {
+      0
     } else if r < w {
       let available = w - r;
       let s = size.min(available);
       self.read_idx = self.wrapping_add(self.read_idx, s);
-      self.buf[r..r + s].to_vec() // can't overflow bc s <= w - r => r + s <= w <= l
+      data[..s].copy_from_slice(&self.buf[r..r + s]); // can't overflow bc s <= w - r => r + s <= w <= l
+      s
     } else {
       let first = l - r;
       let second = w;
       let available = first + second;
       if size <= first {
         self.read_idx = self.wrapping_add(self.read_idx, size);
-        self.buf[r..r + size].to_vec() // can't overflow bc size <= l - r => r + size <= l
+        data.copy_from_slice(&self.buf[r..r + size]); // can't overflow bc size <= l - r => r + size <= l
+        size
       } else {
         let s = size.min(available);
         let rem = s - first; // can't overflow, bc s > first
-        let mut data = self.buf[r..l].to_vec();
-        let mut rest = self.buf[..rem].to_vec();
+        data[..(l - r)].copy_from_slice(&self.buf[r..l]);
+        data[(l - r)..].copy_from_slice(&self.buf[..rem]);
         self.read_idx = rem;
-        data.append(&mut rest);
-        data
+        s
       }
     };
     if self.read_idx == self.write_idx {
       self.empty = true;
     }
-    data
+    bytes_read
   }
 
   pub fn len(&self) -> usize {
@@ -153,8 +155,9 @@ mod tests {
     b.move_write_idx(4);
     assert_eq!(b._get_raw_buf().clone(), vec![0, 1, 2, 3, 0]);
 
-    let d = b.pop(2);
-    assert_eq!(d, vec![0, 1]);
+    let mut d = [0u8; 2];
+    b.pop(&mut d);
+    assert_eq!(d, [0, 1]);
     assert_eq!(b.read_idx, 2);
   }
 
@@ -173,7 +176,7 @@ mod tests {
     b.move_write_idx(3);
     assert_eq!(b.write_idx, 3);
     assert_eq!(b._get_raw_buf().clone(), vec![1, 1, 1, 0, 0]);
-    b.pop(2);
+    b.pop(&mut [0, 0]);
     assert_eq!(b.read_idx, 2);
     assert_eq!(b.write_idx, 3);
     b._push(&[2, 2, 2, 2]);
@@ -189,8 +192,9 @@ mod tests {
     b.move_write_idx(4);
     assert_eq!(b._get_raw_buf().clone(), vec![0, 1, 2, 3, 0]);
 
-    let d = b.pop(6);
-    assert_eq!(d, vec![0, 1, 2, 3]);
+    let mut d = [94u8; 6];
+    b.pop(&mut d);
+    assert_eq!(d, [0, 1, 2, 3, 94, 94]);
     assert_eq!(b.read_idx, 4);
   }
 
@@ -200,11 +204,12 @@ mod tests {
     b._push(&[1, 1, 1, 1, 1]);
     b.move_write_idx(5);
     assert_eq!(b.write_idx, 0);
-    let d = b.pop(1);
-    assert_eq!(d, vec![1]);
+    let mut d = [0u8; 1];
+    b.pop(&mut d);
     assert_eq!(b.read_idx, 1);
-    let d = b.pop(1);
-    assert_eq!(d, vec![1]);
+    let mut d = [0u8; 1];
+    b.pop(&mut d);
+    assert_eq!(d, [1]);
     assert_eq!(b.read_idx, 2);
   }
 
@@ -218,8 +223,9 @@ mod tests {
     assert_eq!(b.write_idx, 0);
     assert!(!b.empty);
 
-    let d = b.pop(1);
-    assert_eq!(d, vec![1]);
+    let mut d = [0u8; 1];
+    b.pop(&mut d);
+    assert_eq!(d, [1]);
     assert_eq!(b.read_idx, 1);
 
     b._push(&[2]);
@@ -227,8 +233,9 @@ mod tests {
     assert_eq!(b.write_idx, 1);
     assert!(!b.empty);
 
-    let d = b.pop(5);
-    assert_eq!(d, vec![1, 1, 1, 1, 2]);
+    let mut d = [0u8; 5];
+    b.pop(&mut d);
+    assert_eq!(d, [1, 1, 1, 1, 2]);
     assert_eq!(b.read_idx, 1);
     assert!(b.empty);
   }

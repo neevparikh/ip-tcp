@@ -610,6 +610,7 @@ impl TcpStream {
                     break;
                   }
                   stream.state = TcpStreamState::CloseWait;
+                  recv_buffer_cond.notify_all();
                 }
 
                 if let Err(e) = handle_incoming_ack_data(&tcp_header, data, &mut stream) {

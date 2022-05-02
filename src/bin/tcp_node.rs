@@ -8,10 +8,10 @@ use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
+use ip_tcp::edebug;
 use ip_tcp::ip::{IpLayer, Protocol};
 use ip_tcp::misc::lnx_config::LnxConfig;
 use ip_tcp::tcp::{Port, SocketId, SocketSide, TcpLayer, TcpLayerInfo, TcpListener, TcpStream};
-use ip_tcp::{debug, edebug};
 use shellwords;
 
 #[derive(Parser, Debug)]
@@ -38,7 +38,7 @@ fn send_file(info: TcpLayerInfo, filename: String, dst_ip: Ipv4Addr, port: Port)
     stream.send(&buf[0..n]).unwrap();
   }
   stream.close()?;
-  debug!("Time: {}", Instant::now().duration_since(now).as_millis());
+  println!("Time: {}", Instant::now().duration_since(now).as_millis());
   Ok(())
 }
 
@@ -46,6 +46,7 @@ fn recv_file(info: TcpLayerInfo, filename: String, port: Port) -> Result<()> {
   let mut f = File::create(filename)?;
   let mut listener = TcpListener::bind(port, info)?;
   let stream = listener.accept()?;
+  listener.close()?;
   let mut buf = [0u8; 2usize.pow(14)];
 
   let now = Instant::now();
@@ -58,7 +59,7 @@ fn recv_file(info: TcpLayerInfo, filename: String, port: Port) -> Result<()> {
       }
     }
   }
-  debug!("Time: {}", Instant::now().duration_since(now).as_millis());
+  println!("Time: {}", Instant::now().duration_since(now).as_millis());
   Ok(())
 }
 
@@ -221,11 +222,15 @@ fn parse_and_run_cmd(
 
     "send_file" | "sf" => {
       let (filename, ip, port) = parse_send_file_args(tokens)?;
-      send_file(tcp_layer.get_info(), filename, ip, port)?;
+      let info = tcp_layer.get_info();
+      thread::spawn(move || {
+        send_file(info, filename, ip, port).unwrap_or_else(|e| eprintln!("{e}"))
+      });
     }
     "recv_file" | "rf" => {
       let (filename, port) = parse_recv_file_args(tokens)?;
-      recv_file(tcp_layer.get_info(), filename, port)?;
+      let info = tcp_layer.get_info();
+      thread::spawn(move || recv_file(info, filename, port).unwrap_or_else(|e| eprintln!("{e}")));
     }
 
     "quit" | "q" => return Ok(true),

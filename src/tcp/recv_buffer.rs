@@ -359,9 +359,8 @@ impl RecvBuffer {
     let bytes_asked_and_available = (win.left.wrapping_sub(win.reader) as usize).min(data.len());
 
     if bytes_asked_and_available > 0 {
-      let mut ready_slice = self.buf.pop(bytes_asked_and_available);
-      debug_assert_eq!(ready_slice.len(), bytes_asked_and_available);
-      data[..bytes_asked_and_available].copy_from_slice(&mut ready_slice);
+      let bytes_read = self.buf.pop(data);
+      debug_assert_eq!(bytes_read, bytes_asked_and_available);
       win.reader = win.reader.wrapping_add(bytes_asked_and_available as u32);
       win.right = win.right.wrapping_add(bytes_asked_and_available as u32);
       debug_assert_eq!(win.reader.wrapping_add(TCP_BUF_SIZE as u32), win.right);

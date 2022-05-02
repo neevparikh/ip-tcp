@@ -11,6 +11,7 @@ pub struct TcpListener {
   info:      TcpLayerInfo,
   socket_id: SocketId,
   conn_rx:   Receiver<Arc<TcpStream>>,
+  stream:    Arc<TcpStream>,
 }
 
 impl TcpListener {
@@ -25,7 +26,12 @@ impl TcpListener {
       info,
       socket_id,
       conn_rx,
+      stream,
     })
+  }
+
+  pub fn close(self) -> Result<()> {
+    self.stream.close()
   }
 
   pub fn accept(&mut self) -> Result<Arc<TcpStream>> {

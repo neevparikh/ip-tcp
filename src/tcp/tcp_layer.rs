@@ -18,6 +18,7 @@ type QueuedStreamMap = Arc<Mutex<BTreeMap<SocketId, (Sender<Arc<TcpStream>>, Has
 
 const START_PORT: Port = 10000;
 
+#[derive(Debug)]
 pub struct SocketPortAvailablity {
   used_ports:     BTreeSet<Port>,
   next_socket_id: SocketId,
@@ -37,7 +38,7 @@ impl SocketPortAvailablity {
       self.used_ports.insert(START_PORT);
       START_PORT
     } else {
-      let mut prev_port = START_PORT - 1;
+      let mut prev_port = START_PORT;
       for &port in self.used_ports.iter() {
         if prev_port + 1 < port {
           self.used_ports.insert(prev_port + 1);
@@ -57,23 +58,35 @@ impl SocketPortAvailablity {
   pub(super) fn add_port(&mut self, port: Port) -> bool {
     self.used_ports.insert(port)
   }
+
+  pub(super) fn remove_port(&mut self, port: Port) -> bool {
+    self.used_ports.remove(&port)
+  }
 }
 
 #[derive(Clone)]
 pub struct TcpLayerInfo {
-  pub(super) sockets_and_ports: LockedSocketPort,
-  pub(super) ip_send_tx:        Sender<IpPacket>,
-  pub(super) streams:           StreamMap,
-  pub(super) queued_streams:    QueuedStreamMap,
-  pub(super) our_ip_addrs:      HashSet<Ipv4Addr>,
+  pub sockets_and_ports:     LockedSocketPort,
+  pub(super) ip_send_tx:     Sender<IpPacket>,
+  pub(super) streams:        StreamMap,
+  pub(super) queued_streams: QueuedStreamMap,
+  pub(super) our_ip_addrs:   HashSet<Ipv4Addr>,
 }
 
 impl TcpLayerInfo {
   pub(super) fn make_cleanup_callback(&self, socket_id: SocketId) -> Box<dyn Fn() + Send> {
     let stream_map = self.streams.clone();
+    let sockets_and_ports = self.sockets_and_ports.clone();
     Box::new(move || {
       let mut sm = stream_map.write().unwrap();
-      sm.remove(&socket_id);
+      let stream = sm.remove(&socket_id);
+      drop(sm);
+      if let Some(stream) = stream {
+        sockets_and_ports
+          .lock()
+          .unwrap()
+          .remove_port(stream.source_port());
+      }
     })
   }
 
