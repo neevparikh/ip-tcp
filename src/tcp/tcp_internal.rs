@@ -29,7 +29,10 @@ pub struct TcpStreamInternal {
   pub next_seq:         u32,
 
   /// state
-  pub state:      TcpStreamState,
+  pub state: TcpStreamState,
+
+  /// read_allowed
+  pub readable:   bool,
   pub socket_id:  SocketId,
   pub ip_send_tx: Sender<IpPacket>,
 }

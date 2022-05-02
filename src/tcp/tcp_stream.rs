@@ -44,11 +44,15 @@ pub struct TcpStream {
   recv_buffer_cond: Arc<Condvar>,
   send_buffer:      Arc<SendBuffer>,
 
-  // thing for others to send this stream a packet
+  /// channel for others to send this stream a packet
   pub(super) stream_tx: Arc<Mutex<Sender<IpTcpPacket>>>,
 }
 
 impl TcpStream {
+  pub fn shutdown_read(&self) {
+    self.internal.lock().unwrap().readable = false;
+  }
+
   pub fn destination(&self) -> Option<SocketAddr> {
     self.internal.lock().unwrap().destination()
   }
@@ -120,6 +124,7 @@ impl TcpStream {
       state: initial_state,
       ip_send_tx: ip_send_tx.clone(),
       socket_id,
+      readable: true,
     }));
 
     let recv_buffer = Arc::new(Mutex::new(RecvBuffer::new(send_thread_tx.clone())));
@@ -211,7 +216,7 @@ impl TcpStream {
   pub(super) fn listen(src_port: Port, info: TcpLayerInfo) -> Result<Arc<TcpStream>> {
     let mut sockets_and_ports = info.sockets_and_ports.lock().unwrap();
     if sockets_and_ports.contains_port(src_port) {
-      Err(anyhow!("Error: port {src_port} in use"))
+      Err(anyhow!("Port {src_port} in use"))
     } else {
       let new_socket = sockets_and_ports.get_new_socket();
       drop(sockets_and_ports);
@@ -291,45 +296,52 @@ impl TcpStream {
 
   /// Called by TcpLayer
   pub fn recv(&self, data: &mut [u8], should_block: bool) -> Result<usize> {
-    let num_bytes = data.len();
-    let mut bytes_read = 0;
-    if should_block {
-      loop {
-        // lock order
-        let state = self.state();
-        let mut buf = self.recv_buffer.lock().unwrap();
-        let n = buf.read_data(&mut data[bytes_read..]);
-        bytes_read += n;
-        if !(bytes_read < num_bytes && VALID_RECV_STATES.contains(&state)) {
-          break;
-        }
-        // Close wait is a valid recv state, however we know that no more data is coming
-        if state == TcpStreamState::CloseWait {
-          if bytes_read > 0 {
-            return Ok(bytes_read);
-          } else {
+    let internal = self.internal.lock().unwrap();
+    let readable = internal.readable;
+    drop(internal);
+    if readable {
+      let num_bytes = data.len();
+      let mut bytes_read = 0;
+      if should_block {
+        loop {
+          // lock order
+          let state = self.state();
+          let mut buf = self.recv_buffer.lock().unwrap();
+          let n = buf.read_data(&mut data[bytes_read..]);
+          bytes_read += n;
+          if !(bytes_read < num_bytes && VALID_RECV_STATES.contains(&state)) {
             break;
           }
+          // Close wait is a valid recv state, however we know that no more data is coming
+          if state == TcpStreamState::CloseWait {
+            if bytes_read > 0 {
+              return Ok(bytes_read);
+            } else {
+              break;
+            }
+          }
+
+          let _ = self.recv_buffer_cond.wait(buf);
         }
 
-        let _ = self.recv_buffer_cond.wait(buf);
-      }
-
-      let state = self.state();
-      if !VALID_RECV_STATES.contains(&state) {
-        Err(anyhow!("Error: connection closing"))
-      } else if bytes_read == num_bytes {
-        Ok(bytes_read)
-      } else if state == TcpStreamState::CloseWait {
-        Err(anyhow!("Error: connection closing"))
+        let state = self.state();
+        if !VALID_RECV_STATES.contains(&state) {
+          Err(anyhow!("Connection closing"))
+        } else if bytes_read == num_bytes {
+          Ok(bytes_read)
+        } else if state == TcpStreamState::CloseWait {
+          Err(anyhow!("Connection closing"))
+        } else {
+          Err(anyhow!("Failure occured during blocking read"))
+        }
       } else {
-        Err(anyhow!("Error: failure occured during blocking read"))
+        let mut buf = self.recv_buffer.lock().unwrap();
+        let bytes_read = buf.read_data(data);
+        debug_assert!(bytes_read <= num_bytes);
+        Ok(bytes_read)
       }
     } else {
-      let mut buf = self.recv_buffer.lock().unwrap();
-      let bytes_read = buf.read_data(data);
-      debug_assert!(bytes_read <= num_bytes);
-      Ok(bytes_read)
+      Err(anyhow!("Operation not permitted"))
     }
   }
 

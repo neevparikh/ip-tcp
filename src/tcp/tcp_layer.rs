@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
@@ -218,9 +218,11 @@ impl TcpLayer {
     let streams = self.info.streams.read().unwrap();
     for (i, stream) in streams.iter() {
       println!(
-        "Socket {i} - src: {:?}:{}, dst: {:?}, state: {:?}",
-        stream.source_ip(),
-        stream.source_port(),
+        "Socket {i} - src: {:?}, dst: {:?}, state: {:?}",
+        SocketAddrV4::new(
+          stream.source_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0)),
+          stream.source_port()
+        ),
         stream.destination(),
         stream.state()
       )
@@ -281,8 +283,13 @@ impl TcpLayer {
           debug!("Error: {e}")
         }
       }
-      SocketSide::Read => todo!(),
-      SocketSide::Both => todo!(),
+      SocketSide::Read => stream.shutdown_read(),
+      SocketSide::Both => {
+        stream.shutdown_read();
+        if let Err(e) = stream.close() {
+          debug!("Error: {e}")
+        }
+      }
     }
   }
 
