@@ -672,8 +672,8 @@ impl SendWindow {
       }
     }
 
-    self.starting_sequence += bytes_popped;
-    self.bytes_in_window -= bytes_popped as usize;
+    self.starting_sequence = self.starting_sequence.wrapping_add(bytes_popped);
+    self.bytes_in_window = self.bytes_in_window.wrapping_sub(bytes_popped as usize);
     return (bytes_popped, fast_retry);
   }
 }
@@ -702,7 +702,7 @@ impl SendData {
     for _ in 0..bytes_acked {
       self.data.pop_front();
     }
-    self.first_sequnce_number += bytes_acked;
+    self.first_sequnce_number = self.first_sequnce_number.wrapping_add(bytes_acked);
   }
 
   /// Returns none if the data associated with seq_number is not currently in the buffer, otherwise

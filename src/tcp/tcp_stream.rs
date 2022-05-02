@@ -427,9 +427,8 @@ impl TcpStream {
         Ok(StreamSendThreadMsg::Outgoing(seq_num, data)) => {
           let mut stream = stream.lock().unwrap();
           if VALID_SEND_STATES.contains(&stream.state) {
-            if seq_num >= stream.next_seq {
-              debug_assert_eq!(stream.next_seq, seq_num);
-              stream.next_seq = seq_num + data.len() as u32;
+            if seq_num == stream.next_seq {
+              stream.next_seq = seq_num.wrapping_add(data.len() as u32);
             }
             if let Err(_e) = stream.send_data(seq_num, data) {
               edebug!("Failed to send data with seq_num {seq_num}");

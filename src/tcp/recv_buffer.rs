@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::mpsc::Sender;
 
 use anyhow::{anyhow, Result};
@@ -43,64 +43,50 @@ impl WindowData {
     let window_left = self.left;
     let window_right = self.right;
     if requested_start > requested_end {
-      dbg!("wrapping", requested_start, requested_end);
       if window_left <= window_right {
         return (Vec::new(), Vec::new()); // can never have anything within window
       }
       let starts: Vec<_> = self
         .starts
-        .range(requested_start..)
-        .into_iter()
-        .chain(self.starts.range(..=requested_end).into_iter())
+        .iter()
         .filter_map(|(&cur_start, &cur_end)| {
           if cur_start > cur_end {
-            if cur_start < window_left || cur_end > window_right {
+            if cur_start > requested_start && cur_end < requested_end {
               None
-            } else if cur_start >= window_left && cur_end > window_right {
-              Some((cur_start, window_right))
-            } else if cur_start < window_left && cur_end <= window_right {
-              Some((window_left, cur_end))
             } else {
               Some((cur_start, cur_end))
             }
           } else {
-            if cur_end <= window_left && cur_start > window_right {
-              None
-            } else if cur_start <= window_left && cur_end > window_left {
-              Some((window_left, cur_end))
-            } else if cur_start < window_right && cur_end >= window_right {
-              Some((cur_start, window_right))
-            } else {
+            let has_cur_start = WindowData::wrapping_within(
+              cur_start,
+              requested_start,
+              requested_end.wrapping_add(1),
+            );
+            if has_cur_start {
               Some((cur_start, cur_end))
+            } else {
+              None
             }
           }
         })
         .collect();
       let ends = self
         .ends
-        .range(requested_start..)
-        .into_iter()
-        .chain(self.ends.range(..requested_end).into_iter())
+        .iter()
         .filter_map(|(&cur_end, &cur_start)| {
           if cur_start > cur_end {
-            if cur_start < window_left || cur_end > window_right {
+            if cur_start > requested_start && cur_end < requested_end {
               None
-            } else if cur_start >= window_left && cur_end > window_right {
-              Some((window_right, cur_start))
-            } else if cur_start < window_left && cur_end <= window_right {
-              Some((cur_end, window_left))
             } else {
               Some((cur_end, cur_start))
             }
           } else {
-            if cur_end <= window_left && cur_start > window_right {
-              None
-            } else if cur_start <= window_left && cur_end > window_left {
-              Some((cur_end, window_left))
-            } else if cur_start < window_right && cur_end >= window_right {
-              Some((window_right, cur_start))
-            } else {
+            let has_cur_end =
+              WindowData::wrapping_within(cur_end, requested_start, requested_end.wrapping_add(1));
+            if has_cur_end {
               Some((cur_end, cur_start))
+            } else {
+              None
             }
           }
         })
@@ -112,14 +98,8 @@ impl WindowData {
         .range(..=requested_end)
         .into_iter()
         .filter_map(|(&cur_start, &cur_end)| {
-          if cur_end <= window_left || cur_start > window_right {
+          if cur_end < requested_start {
             None
-          } else if cur_end < requested_start {
-            None
-          } else if cur_start <= window_left && cur_end > window_left {
-            Some((window_left, cur_end))
-          } else if cur_start < window_right && cur_end >= window_right {
-            Some((cur_start, window_right))
           } else {
             Some((cur_start, cur_end))
           }
@@ -130,14 +110,8 @@ impl WindowData {
         .range(requested_start..)
         .into_iter()
         .filter_map(|(&cur_end, &cur_start)| {
-          if cur_end <= window_left || cur_start > window_right {
+          if cur_start > requested_end {
             None
-          } else if cur_start > requested_end {
-            None
-          } else if cur_start <= window_left && cur_end > window_left {
-            Some((cur_end, window_left))
-          } else if cur_start < window_right && cur_end >= window_right {
-            Some((window_right, cur_start))
           } else {
             Some((cur_end, cur_start))
           }
@@ -210,38 +184,41 @@ impl WindowData {
     }
   }
 
-  fn cleanup_intervals_outside_window(&mut self) {
-    let remove: Vec<_> = if self.right <= self.left {
-      self
-        .starts
-        .range(self.right..self.left)
-        .into_iter()
-        .filter_map(|(&s, &e)| {
-          if (self.right..=self.left).contains(&e) {
-            Some((s, e))
-          } else {
-            None
-          }
-        })
-        .collect()
+  fn wrapping_within(x: u32, l: u32, r: u32) -> bool {
+    if l <= r {
+      (l..r).contains(&x)
     } else {
-      self
-        .starts
-        .range(0..self.left)
-        .into_iter()
-        .chain(self.starts.range(self.right..).into_iter())
-        .filter_map(|(&s, &e)| {
-          if (0..=self.left).contains(&e) || (self.right..).contains(&e) {
-            Some((s, e))
-          } else {
-            None
-          }
-        })
-        .collect()
-    };
-    for (s, e) in remove {
-      self.starts.remove(&s);
-      self.ends.remove(&e);
+      (l..).contains(&x) || (..r).contains(&x)
+    }
+  }
+
+  fn cleanup_intervals_outside_window(&mut self) {
+    let (keep_starts, _) = self.get_interval_between(self.left, self.right);
+    let keep_starts: HashSet<(u32, u32)> = HashSet::from_iter(keep_starts.into_iter());
+    let all_starts: Vec<_> = self.starts.iter().map(|(&s, &e)| (s, e)).collect();
+    for (s, e) in all_starts {
+      if keep_starts.contains(&(s, e)) {
+        let has_s = WindowData::wrapping_within(s, self.left, self.right);
+        let has_e = WindowData::wrapping_within(e, self.left, self.right);
+
+        if !has_s && !has_e {
+          self.starts.remove(&s);
+          self.ends.remove(&e);
+          self.starts.insert(self.left, self.right);
+          self.ends.insert(self.right, self.left);
+        } else if has_s && !has_e {
+          self.starts.insert(s, self.right);
+          self.ends.remove(&e);
+          self.ends.insert(self.right, s);
+        } else if !has_s && has_e {
+          self.ends.insert(e, self.left);
+          self.starts.remove(&s);
+          self.starts.insert(self.left, e);
+        }
+      } else {
+        self.starts.remove(&s);
+        self.ends.remove(&e);
+      }
     }
   }
 }
@@ -276,20 +253,10 @@ impl RecvBuffer {
       return Ok(());
     }
 
-    let wrap = win.right < win.left;
-
-    // no wrapping
     let seg_l = seq_num;
     let seg_r = seq_num.wrapping_add(data.len() as u32);
-    let (has_l, has_r) = if wrap {
-      let has_l = (win.left..).contains(&seg_l) || (..win.right).contains(&seg_l);
-      let has_r = (win.left..).contains(&seg_r) || (..win.right).contains(&seg_r);
-      (has_l, has_r)
-    } else {
-      let has_l = (win.left..win.right).contains(&seg_l);
-      let has_r = (win.left..win.right).contains(&seg_r.wrapping_sub(1));
-      (has_l, has_r)
-    };
+    let has_l = WindowData::wrapping_within(seg_l, win.left, win.right);
+    let has_r = WindowData::wrapping_within(seg_r.wrapping_sub(1), win.left, win.right);
 
     // If within interval, add data to buffer and update intervals
     if let Some((interval_l, interval_r)) = if has_l && has_r {
@@ -328,11 +295,7 @@ impl RecvBuffer {
         return Ok(());
       }
     } {
-      let wrap = interval_r < interval_l;
-      if interval_l == win.left
-        || (!wrap && (interval_l..interval_r).contains(&win.left))
-        || (wrap && ((interval_l..).contains(&win.left) || (..interval_r).contains(&win.left)))
-      {
+      if interval_l == win.left || WindowData::wrapping_within(win.left, interval_l, interval_r) {
         win.current_ack = win
           .current_ack
           .wrapping_add(interval_r.wrapping_sub(win.left));
