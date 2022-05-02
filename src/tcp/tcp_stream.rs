@@ -75,9 +75,16 @@ impl TcpStream {
     self.internal.lock().unwrap().state = state;
   }
 
-  /// get window size
-  pub fn window_size(&self) -> u16 {
-    self.recv_buffer.lock().unwrap().get_window_size()
+  /// get window size, recv, and send
+  pub fn window_size(&self) -> Option<(u16, u16, u16)> {
+    match self.state() {
+      TcpStreamState::Listen => None,
+      _ => Some((
+        self.recv_buffer.lock().unwrap().window_size(),
+        self.send_buffer.their_recv_window_size(),
+        self.send_buffer.window_size(),
+      )),
+    }
   }
 }
 
@@ -327,13 +334,13 @@ impl TcpStream {
         Ok(())
       }
       TcpStreamState::Listen => {
-        // TODO: Any outstanding RECEIVEs are returned with "error:  closing"
-        // responses.  Delete TCB, enter CLOSED state, and return.
+        // Any outstanding RECEIVEs are returned with "error:  closing"
+        // responses. Delete TCB, enter CLOSED state, and return.
         internal.state = TcpStreamState::Closed;
         Ok(())
       }
       TcpStreamState::SynSent => {
-        // TODO: delete the TCB (this probably need to be handled a level up?)
+        // Delete the TCB (this probably need to be handled a level up?)
         internal.state = TcpStreamState::Closed;
         Ok(())
       }
@@ -341,20 +348,22 @@ impl TcpStream {
         // TODO: If no SENDs have been issued and there is no pending data to send,
         // then form a FIN segment and send it, and enter FIN-WAIT-1 state;
         // otherwise queue for processing after entering ESTABLISHED state.
+        drop(internal);
+        self.send_buffer.send_fin()?;
         Ok(())
       }
       TcpStreamState::Established => {
-        // TODO: Queue this request until all preceding SENDs have been
+        // Queue this request until all preceding SENDs have been
         // segmentized; then send a FIN segment, enter CLOSING state.
         drop(internal);
         self.send_buffer.send_fin()?;
-        // Don't set state to fin wait until fin is actuall sent out
+        // Don't set state to fin wait until fin is actually sent out
         Ok(())
       }
       TcpStreamState::FinWait1 => Err(anyhow!("connection closing")),
       TcpStreamState::FinWait2 => Err(anyhow!("connection closing")),
       TcpStreamState::CloseWait => {
-        // TODO: Contradiction between flow chart and page 61 of RFC which says
+        // NOTE: Contradiction between flow chart and page 61 of RFC which says
         // Queue this request until all preceding SENDs have been
         // segmentized; then send a FIN segment, enter CLOSING state.
         // current implementation follows chart

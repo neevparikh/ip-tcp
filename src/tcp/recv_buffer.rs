@@ -247,7 +247,7 @@ impl RecvBuffer {
     }
   }
 
-  pub fn get_window_size(&self) -> u16 {
+  pub fn window_size(&self) -> u16 {
     let win = self
       .win
       .as_ref()
@@ -325,7 +325,7 @@ impl RecvBuffer {
     win.cleanup_intervals_outside_window();
     if let Err(_) = self.stream_send_tx.send(StreamSendThreadMsg::Ack(
       win.current_ack,
-      self.get_window_size(),
+      self.window_size(),
     )) {
       edebug!("Could not send message to tcp_stream via stream_send_tx...");
       Err(anyhow!(
@@ -366,9 +366,7 @@ impl RecvBuffer {
       debug_assert_eq!(win.reader.wrapping_add(TCP_BUF_SIZE as u32), win.right);
       if let Err(_) = self
         .stream_send_tx
-        .send(StreamSendThreadMsg::UpdateWindowSize(
-          self.get_window_size(),
-        ))
+        .send(StreamSendThreadMsg::UpdateWindowSize(self.window_size()))
       {
         edebug!("Could not send message to tcp_stream via stream_send_tx...");
         return 0;

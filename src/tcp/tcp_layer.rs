@@ -9,7 +9,7 @@ use etherparse::{Ipv4Header, TcpHeader};
 
 use super::socket::{SocketId, SocketSide};
 use super::tcp_stream::TcpStream;
-use super::{IpTcpPacket, Port};
+use super::{IpTcpPacket, Port, TcpStreamState};
 use crate::ip::{HandlerFunction, IpPacket};
 use crate::{debug, edebug};
 
@@ -230,27 +230,37 @@ impl TcpLayer {
   pub fn print_window(&self, socket_id: SocketId) {
     let streams = self.info.streams.read().unwrap();
     match streams.get(&socket_id) {
-      Some(stream) => println!("Window size: {}", stream.window_size()),
+      Some(stream) => match stream.window_size() {
+        Some((our_recv_window, their_recv_window, send_window)) => {
+          println!(
+            "our_recv: {our_recv_window} | their_recv: {their_recv_window} | our_send: \
+             {send_window}"
+          )
+        }
+        None => println!("N/A for listener sockets"),
+      },
       None => eprintln!("Unknown socket_id: {socket_id}"),
     }
   }
 
   pub fn send(&self, socket_id: SocketId, data: Vec<u8>) -> Result<()> {
-    // TODO: check state of stream
     let streams = self.info.streams.read().unwrap();
     match streams.get(&socket_id) {
-      Some(stream) => {
-        stream.send(&data)?;
-        Ok(())
-      }
-      None => return Err(anyhow!("Unknown socket_id: {socket_id}")),
+      Some(stream) => match stream.state() {
+        TcpStreamState::Listen => Err(anyhow!("Operation not supported on listener socket")),
+        _ => Ok(stream.send(&data)?),
+      },
+      None => Err(anyhow!("Unknown socket_id: {socket_id}")),
     }
   }
 
   pub fn recv(&self, socket_id: SocketId, data: &mut [u8], should_block: bool) -> Result<usize> {
     let streams = self.info.streams.read().unwrap();
     match streams.get(&socket_id) {
-      Some(stream) => Ok(stream.recv(data, should_block)?),
+      Some(stream) => match stream.state() {
+        TcpStreamState::Listen => Err(anyhow!("Operation not supported on listener socket")),
+        _ => Ok(stream.recv(data, should_block)?),
+      },
       None => Err(anyhow!("Unknown socket_id: {socket_id}")),
     }
   }

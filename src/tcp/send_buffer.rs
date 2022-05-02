@@ -173,7 +173,7 @@ impl SendBuffer {
 
   /// Blocks until all bytes written
   /// TODO: what is stream shuts down before we finish?
-  /// TODO: Should never have multiple threads calling this function
+  /// NOTE: Should never have multiple threads calling this function
   pub fn write_data(&self, data: &[u8]) -> Result<usize> {
     let mut bytes_written = 0;
     let state = self.state_pair.0.lock().unwrap();
@@ -212,6 +212,15 @@ impl SendBuffer {
     self.state_pair.1.notify_all();
 
     Ok(bytes_written)
+  }
+
+  pub fn window_size(&self) -> u16 {
+    let win = self.window.read().unwrap();
+    win.max_size.saturating_sub(win.bytes_in_window) as u16
+  }
+
+  pub fn their_recv_window_size(&self) -> u16 {
+    self.window.read().unwrap().recv_window_size
   }
 
   pub fn send_syn(&self) -> Result<()> {
