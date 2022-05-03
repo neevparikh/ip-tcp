@@ -302,43 +302,41 @@ impl TcpStream {
     if readable {
       let num_bytes = data.len();
       let mut bytes_read = 0;
-      if should_block {
-        loop {
-          // lock order
-          let state = self.state();
-          let mut buf = self.recv_buffer.lock().unwrap();
-          let n = buf.read_data(&mut data[bytes_read..]);
-          bytes_read += n;
-          if !(bytes_read < num_bytes && VALID_RECV_STATES.contains(&state)) {
+      loop {
+        // lock order
+        let state = self.state();
+        let mut buf = self.recv_buffer.lock().unwrap();
+        let n = buf.read_data(&mut data[bytes_read..]);
+        bytes_read += n;
+        if !(bytes_read < num_bytes && VALID_RECV_STATES.contains(&state)) {
+          break;
+        }
+
+        if !should_block && bytes_read > 0 {
+          return Ok(bytes_read);
+        }
+
+        // Close wait is a valid recv state, however we know that no more data is coming
+        if state == TcpStreamState::CloseWait {
+          if bytes_read > 0 {
+            return Ok(bytes_read);
+          } else {
             break;
           }
-          // Close wait is a valid recv state, however we know that no more data is coming
-          if state == TcpStreamState::CloseWait {
-            if bytes_read > 0 {
-              return Ok(bytes_read);
-            } else {
-              break;
-            }
-          }
-
-          let _ = self.recv_buffer_cond.wait(buf);
         }
 
-        let state = self.state();
-        if !VALID_RECV_STATES.contains(&state) {
-          Err(anyhow!("Connection closing"))
-        } else if bytes_read == num_bytes {
-          Ok(bytes_read)
-        } else if state == TcpStreamState::CloseWait {
-          Err(anyhow!("Connection closing"))
-        } else {
-          Err(anyhow!("Failure occured during blocking read"))
-        }
-      } else {
-        let mut buf = self.recv_buffer.lock().unwrap();
-        let bytes_read = buf.read_data(data);
-        debug_assert!(bytes_read <= num_bytes);
+        let _ = self.recv_buffer_cond.wait(buf);
+      }
+
+      let state = self.state();
+      if !VALID_RECV_STATES.contains(&state) {
+        Err(anyhow!("Connection closing"))
+      } else if bytes_read == num_bytes {
         Ok(bytes_read)
+      } else if state == TcpStreamState::CloseWait {
+        Err(anyhow!("Connection closing"))
+      } else {
+        Err(anyhow!("Failure occured during blocking read"))
       }
     } else {
       Err(anyhow!("Operation not permitted"))

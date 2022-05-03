@@ -24,7 +24,16 @@ Our implementation considers the following:
   thread, that is responsible for maintaining the stream state and handling closing/etc. correctly. 
 * Each stream also has access to a send and recv buffer, which are designed to correctly implement
   the sliding window algorithm. 
-* TODO: write about the send buffer
+* The send buffer has two main components, the window, and the data. The application writes data
+  into the internal buffer (blocking if the buffer is currently full), and the window keeps track of
+  which portions of the buffer are currently in flight. The send buffer additionally owns two
+  threads: The send thread periodically wakes up (due to new data, acks, timeouts, zero window
+  probing, etc.) and is in charge of sending out retries, segmenting the data into packets, and
+  forwarding packets to the tcp layer to be sent out. The timeout thread is in charge of waking the
+  send thread up when timeouts have expired. The final important thing to note about the send buffer
+  is that it tracks it's own state which is similar to the TCP stream state but has some difference.
+  This allows sends to be queued up until the syn has been acked, and the fin can be queued until
+  the current data is segmented and sent out.
 * The recv buffer is backed by a underlying ring buffer and a data structure that keeps track of
   intervals of sequence numbers. It correctly handles wrapping of sequence numbers, and keeping
   track of reads and acking data. Interval tracking is handled by two binary trees that keep track
@@ -34,9 +43,63 @@ Our implementation considers the following:
 * For the public facing API, we expose a TcpStream and a TcpListener, which matches the default
   language API. Listener exposes a bind and accept function, and Stream exposes a connect function.
 
-### Wireshark Captures
+### Congestion Control
+
+Although we are not taking networks as a capstone course, we decided to implement congestion control
+for fun (and hopefully some extra credit). We implemented the reno algorithm with slow start, and
+fast recovery on repeated duplicate acks. Since we weren't implementing this as a requirement our
+api is slightly different from the one specified in the handout. The simplest way to test congestion
+control is to add the word `reno` as an additional argument to the send file command. Additionally,
+`reno` can also be added to any connect command to force that socket to use congestion control.
+
+### Performance
+
+All tests involved sending a 1MB file of random bits across the network (unless otherwise specified.
+Our implementation achieves comparable performance on a non-lossy network, and on a lossy network
+our implementation is 11.5 times faster without congestion control, and 21.7 times faster with
+congestion control. Note that the timing in very high variance since the initial timeout is very
+long, so if packets are dropped early (before the RTT is learned) there will be a longer delay
+before they are resent. The worst case for this is if the SYN or SYN is dropped in which our
+implementation sometimes takes >3 seconds to complete.
+
+#### B -> A (w/o lossy node)
+the reference implementation.
+```
+            our recv | ref recv
+---------------------------------------------
+our send  | 108ms    | 69ms 
+ref send  | 103ms    | 92ms     
+```
 
 #### C -> A with B as lossy node with 2% drop
+Sending a 1MB file without a lossy node showed comparable performance across our implementation and
+the reference implementation.
+```
+            our recv | ref recv
+---------------------------------------------
+our send  | 696ms    | 695ms
+ref send  | 8606ms   | 8003ms
+```
+
+#### C -> A with B as lossy node with 2% drop with congestion control
+```
+            our recv | ref recv
+---------------------------------------------
+our send  | 368ms    | 449ms
+ref send  | N/A      | N/A
+```
+
+#### C -> A with B as lossy node with 2% drop with congestion control 100MB file
+```
+            our recv | ref recv
+---------------------------------------------
+our send  | 16.5 sec | N/A
+ref send  | N/A      | 321 sec (5.3 minutes)
+```
+
+### Wireshark Captures
+
+#### C -> A with B as lossy node with 2% drop (file: `C_to_A_lossy.pcapng`)
 
 Handshake
 
@@ -69,6 +132,11 @@ Teardown
 4661 - Ack    seq = 1048578 | ack = 2       | win = 65535
 
 ```
+
+#### C -> A with B as lossy node with 2% drop w/ congestion control (file: `C_to_A_congestion.pcapng`)
+
+Fast Retransmission can be seen in frame 423. Additionally, looking at the start of the capture we
+can see that the sent packets are sent out in larger and larger chunks until a drop occurs.
 
 ## IP
 
